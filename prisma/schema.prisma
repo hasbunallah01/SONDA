@@ -1,0 +1,21 @@
+// SONDA — Prisma schema
+//
+// This is a placeholder. Models will be added when persistence is introduced
+// (see README → Development Roadmap). The generator and datasource are wired
+// up so the project compiles and `prisma generate` succeeds out of the box.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// TODO(next-phase): add models for
+//   - ReviewSession
+//   - EvidenceBundle
+//   - ReviewerOutput
+//   - User  (when auth lands)
+//   - Account, Session, VerificationToken  (NextAuth)
