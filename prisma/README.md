@@ -13,12 +13,23 @@ prisma/
 
 ## Models
 
-| Model           | Purpose                                                                  |
-| --------------- | ------------------------------------------------------------------------ |
-| `ReviewSession` | One investigation request, end-to-end. Persists type / target / status.  |
-| `ReviewResult`  | The jury's final verdict for a session. One-to-one with `ReviewSession`. |
+| Model            | Purpose                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| `ReviewSession`  | One investigation request, end-to-end. Persists type / target / status.              |
+| `ReviewerResult` | One row per juror (`qa` / `ux` / `marketing` / `investor` / `judge` / `first-user`). |
+| `ReviewResult`   | The jury's final verdict for a session. One-to-one with `ReviewSession`.             |
 
-Enums: `ReviewType` (`WEBSITE` / `GITHUB` / `ZIP` / `PRIVATE_WEBSITE`) and `ReviewStatus` (`PENDING` / `RUNNING` / `COMPLETED` / `FAILED`).
+Enums:
+
+| Enum                | Values                                                          |
+| ------------------- | --------------------------------------------------------------- |
+| `ReviewType`        | `WEBSITE` / `GITHUB` / `ZIP` / `PRIVATE_WEBSITE`                |
+| `ReviewStatus`      | `PENDING` / `RUNNING` / `COMPLETED` / `FAILED`                  |
+| `ReviewerType`      | `QA` / `UX` / `MARKETING` / `INVESTOR` / `JUDGE` / `FIRST_USER` |
+| `PriorityFixEffort` | `LOW` / `MEDIUM` / `HIGH`                                       |
+| `PriorityFixImpact` | `LOW` / `MEDIUM` / `HIGH`                                       |
+
+`ReviewerResult` is the durable per-juror output: `score` (0–100), `confidence` (0–1), `summary`, `strengths[]`, `weaknesses[]`, and `priorityFixes` JSON. A `ReviewSession` accumulates one row per juror — the unique index on `(sessionId, reviewer)` enforces that at the database level. The verdict engine then folds these rows into the single `ReviewResult` verdict row.
 
 ## Commands
 
