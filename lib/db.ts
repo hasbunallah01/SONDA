@@ -80,4 +80,4 @@ if (isDevelopment) {
  * dependency into feature folders.
  */
 export type { Prisma } from '@prisma/client';
-export { ReviewType, ReviewStatus } from '@prisma/client';
+export { ReviewType, ReviewStatus, ReviewerType } from '@prisma/client';
