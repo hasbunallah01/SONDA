@@ -1,56 +1,61 @@
 /**
- * app/review/zip/page.tsx — Local Project ZIP review form (frontend only).
+ * app/review/zip/page.tsx — Local Project ZIP review form.
  *
- * Sibling of /review/website and /review/github: same layout, same
- * submit-no-op behaviour, same accessibility wiring. The intake is a
- * local ZIP file the user picks via drag-and-drop or a file picker.
- * The file is read client-side only to surface its name and size in
- * the UI — no extraction, no upload, no backend call.
+ * Lets the user submit a public URL to a hosted ZIP file
+ * (e.g. a GitHub release artifact, an S3 public link, a
+ * deployment URL). The backend downloads + extracts the
+ * archive in memory and runs the reviewer panel against
+ * the file tree.
+ *
+ * This replaces the earlier drag-and-drop file picker
+ * because Vercel serverless functions cap request bodies at
+ * 4.5 MB and most real project ZIPs are far larger. A URL
+ * intake is the only path that works at production scale.
  *
  * Design
- *  - Mirrors the other two review pages: back link → eyebrow / title /
- *    description → form card → info card.
- *  - Drag-and-drop zone is a large dashed-border region that highlights
- *    on dragover; the hidden <input type="file"> is opened via a
- *    "Choose file" button so the UI works for both mouse and keyboard
- *    users.
- *  - Reuses the same Card and Button primitives, the primary-soft
- *    icon tile, and the same max-width container.
+ *  - Mirrors the website / github intake pages: back link
+ *    → eyebrow / title / description → form card → info card.
+ *  - Reuses the same Card, Input, and Button primitives.
  *
  * Accessibility
  *  - Wrapped in a semantic <main>.
- *  - The drop zone is a real <button>-style target via a clickable
- *    wrapper; the actual <input type="file"> is the source of truth and
- *    is wired to a visible label and helper text.
- *  - On submit we call event.preventDefault() to keep this static.
- *  - A live region announces the local "investigation queued" message
- *    so screen readers hear the change.
+ *  - The <form> is a real <form>; the URL field has an
+ *    associated <label> and aria-describedby pointing at the
+ *    helper text.
+ *  - On submit we call event.preventDefault() and POST to
+ *    the backend.
+ *  - An aria-live region announces the in-flight state so
+ *    screen readers hear the change.
  *
- * Out of scope (per task)
- *  - No file processing, no ZIP extraction, no backend, no API.
+ * Out of scope
+ *  - Direct file upload (Vercel body limit).
+ *  - Resumable / chunked uploads.
  */
 
 'use client';
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { LucideIcon } from 'lucide-react';
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   Boxes,
-  CheckCircle2,
-  CloudUpload,
   FileArchive,
   FolderTree,
   Layers,
+  Link as LinkIcon,
+  Loader2,
   Rocket,
   ScrollText,
-  X,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { createReview } from '@/lib/review-api';
 
 interface AnalysisItem {
   /** Short title shown in bold. */
@@ -63,134 +68,77 @@ interface AnalysisItem {
 
 const ANALYSIS_ITEMS: AnalysisItem[] = [
   {
-    title: 'Folder structure',
-    description: 'Top-level layout and how discoverable the project is at a glance.',
+    title: 'File tree',
+    description: 'Top-level layout, naming, and discoverability of the project.',
     icon: FolderTree,
   },
   {
-    title: 'Documentation',
-    description: 'READMEs, guides, and the path from download to running.',
+    title: 'README quality',
+    description: 'Whether the front page sells the project to a first-time visitor.',
     icon: ScrollText,
   },
   {
-    title: 'Frontend organization',
-    description: 'Component boundaries, naming, and how the UI layer is composed.',
-    icon: Layers,
-  },
-  {
-    title: 'Backend organization',
-    description: 'Routes, services, and how the server side is split up.',
+    title: 'Dependencies',
+    description: 'package.json (or equivalent) and the libraries the project pulls in.',
     icon: Boxes,
   },
   {
-    title: 'Project completeness',
-    description: 'Whether what is shipped actually matches what is promised.',
-    icon: FileArchive,
+    title: 'Source structure',
+    description: 'Folders, modules, and the signals of a maintainable codebase.',
+    icon: Layers,
   },
   {
-    title: 'Startup readiness',
+    title: 'Launch readiness',
     description: 'A single Ship / Refine / Hold decision backed by the evidence above.',
     icon: Rocket,
   },
 ];
 
-/** Max ZIP size surfaced in the UI. Real enforcement is out of scope here. */
-const MAX_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
-const MAX_SIZE_LABEL = '50 MB';
+const EXAMPLE_URL = 'https://example.com/my-project.zip';
 
-const formatBytes = (bytes: number): string => {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
-  return `${(mb / 1024).toFixed(2)} GB`;
-};
-
-const validateFile = (file: File): string | null => {
-  const name = file.name.toLowerCase();
-  if (!name.endsWith('.zip')) {
-    return 'Please choose a .zip file.';
+const isLikelyZipUrl = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    return /\.zip(\?.*)?$/i.test(url.pathname) || /\.zip(\?.*)?$/i.test(trimmed);
+  } catch {
+    return false;
   }
-  if (file.size === 0) {
-    return 'This file is empty. Pick a project ZIP with content inside.';
-  }
-  if (file.size > MAX_SIZE_BYTES) {
-    return `File is larger than ${MAX_SIZE_LABEL}. Compress or split before uploading.`;
-  }
-  return null;
 };
 
 const ZipReviewPage: React.FC = () => {
-  const [file, setFile] = React.useState<File | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [isDragging, setIsDragging] = React.useState<boolean>(false);
-  const [submittedFile, setSubmittedFile] = React.useState<File | null>(null);
+  const router = useRouter();
+  const [url, setUrl] = React.useState<string>('');
+  const [submittedUrl, setSubmittedUrl] = React.useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = React.useState<boolean>(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
-  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const trimmed = url.trim();
+  const isValid = isLikelyZipUrl(trimmed);
+  const canSubmit = isValid && !isSubmitting;
 
-  // Stable ids for aria wiring.
-  const dropzoneId = React.useId();
-  const helperId = `${dropzoneId}-helper`;
-  const errorId = `${dropzoneId}-error`;
-  const titleId = React.useId();
-
-  const acceptFile = React.useCallback((candidate: File | null | undefined): void => {
-    if (!candidate) return;
-    const validationError = validateFile(candidate);
-    if (validationError) {
-      setFile(null);
-      setError(validationError);
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!isValid || isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmitError(null);
+    setSubmittedUrl(trimmed);
+    const result = await createReview({ type: 'zip', target: trimmed });
+    if (!result.ok) {
+      setIsSubmitting(false);
+      setSubmitError(result.message);
       return;
     }
-    setError(null);
-    setFile(candidate);
-  }, []);
-
-  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
-    const next = event.target.files?.[0] ?? null;
-    acceptFile(next);
+    router.push(`/review/${result.id}`);
   };
 
-  const handleDragOver = (event: React.DragEvent<HTMLDivElement>): void => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!isDragging) setIsDragging(true);
-  };
-
-  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>): void => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDrop = (event: React.DragEvent<HTMLDivElement>): void => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragging(false);
-    const next = event.dataTransfer.files?.[0] ?? null;
-    acceptFile(next);
-  };
-
-  const openFilePicker = (): void => {
-    inputRef.current?.click();
-  };
-
-  const clearFile = (): void => {
-    setFile(null);
-    setError(null);
-    if (inputRef.current) inputRef.current.value = '';
-  };
-
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    if (!file) return;
-    // Frontend only — acknowledge locally; the real flow is wired up in
-    // a later task.
-    setSubmittedFile(file);
-  };
-
-  const canSubmit = file !== null;
+  // Stable ids for aria wiring.
+  const inputId = React.useId();
+  const helperId = `${inputId}-helper`;
+  const titleId = React.useId();
+  const liveRegionId = React.useId();
 
   return (
     <main className="relative w-full bg-background px-6 py-20 text-text-primary sm:py-24">
@@ -217,7 +165,7 @@ const ZipReviewPage: React.FC = () => {
             Review a Local Project
           </h1>
           <p className="mt-4 text-body leading-relaxed text-text-secondary sm:text-lg">
-            Upload your project files and let SONDA inspect your product structure.
+            Point SONDA at a hosted ZIP and let the jury inspect your project structure.
           </p>
         </div>
 
@@ -235,15 +183,16 @@ const ZipReviewPage: React.FC = () => {
                 aria-hidden="true"
                 className="font-display text-caption font-semibold uppercase tracking-widest text-text-muted"
               >
-                Step 1 · Upload ZIP
+                Step 1 · Submit ZIP URL
               </span>
             </div>
             <CardTitle as="h2" className="mt-4 text-h4">
-              Project ZIP
+              Project ZIP URL
             </CardTitle>
             <CardDescription className="text-body leading-relaxed text-text-secondary">
-              Drop a packaged snapshot of your project below, or pick one from your machine. SONDA
-              will treat it as the only source of truth.
+              Paste the URL of a hosted ZIP file — a GitHub release artifact, an S3 public link, or
+              any other reachable <span className="font-mono">.zip</span>. SONDA will download,
+              extract, and review the project as the only source of truth.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -253,106 +202,43 @@ const ZipReviewPage: React.FC = () => {
               className="flex flex-col gap-4"
               onSubmit={handleSubmit}
             >
-              {/* Hidden file input — the actual input the browser writes to. */}
-              <input
-                ref={inputRef}
-                accept=".zip,application/zip,application/x-zip-compressed"
-                aria-describedby={error ? errorId : helperId}
-                aria-invalid={error ? true : undefined}
-                className="sr-only"
-                id={dropzoneId}
-                type="file"
-                onChange={handleInputChange}
-              />
-
-              {/* Drop zone */}
-              <div
-                aria-label="Drag and drop a ZIP file, or use the choose file button"
-                className={[
-                  'flex flex-col items-center justify-center gap-3',
-                  'rounded-lg border-2 border-dashed',
-                  'px-6 py-10 text-center',
-                  'transition-colors duration-200 ease-out',
-                  isDragging
-                    ? 'border-primary bg-primary-soft/40'
-                    : 'border-border bg-background/40 hover:border-primary/50',
-                ].join(' ')}
-                onDragLeave={handleDragLeave}
-                onDragOver={handleDragOver}
-                onDrop={handleDrop}
-              >
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-12 w-12 items-center justify-center rounded-md bg-primary-soft text-primary"
+              <div className="flex flex-col gap-2">
+                <label
+                  className="font-display text-caption font-semibold text-text-primary"
+                  htmlFor={inputId}
                 >
-                  <CloudUpload className="h-6 w-6" strokeWidth={2} />
-                </span>
-                <div className="flex flex-col items-center gap-1">
-                  <p className="font-display text-body font-semibold text-text-primary">
-                    Drag and drop your project ZIP
-                  </p>
-                  <p className="text-caption text-text-secondary">
-                    or use the button below — {MAX_SIZE_LABEL} max
-                  </p>
-                </div>
-                <Button
-                  aria-label="Choose a ZIP file from your computer"
-                  size="md"
-                  type="button"
-                  variant="outline"
-                  onClick={openFilePicker}
-                >
-                  Choose file
-                </Button>
-              </div>
-
-              {/* Selected file chip */}
-              {file && !error ? (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-surface-elevated p-3">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      aria-hidden="true"
-                      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary"
-                    >
-                      <FileArchive className="h-4 w-4" strokeWidth={2} />
-                    </span>
-                    <div className="flex min-w-0 flex-col">
-                      <span
-                        aria-label={`Selected file ${file.name}, size ${formatBytes(file.size)}`}
-                        className="truncate font-mono text-caption text-text-primary"
-                      >
-                        {file.name}
-                      </span>
-                      <span className="text-caption text-text-muted">{formatBytes(file.size)}</span>
-                    </div>
-                  </div>
-                  <Button
-                    aria-label="Remove selected file"
-                    size="icon"
-                    type="button"
-                    variant="ghost"
-                    onClick={clearFile}
-                  >
-                    <X aria-hidden="true" className="h-4 w-4" />
-                  </Button>
-                </div>
-              ) : null}
-
-              {/* Error message */}
-              {error ? (
-                <p className="text-caption font-medium text-error" id={errorId} role="alert">
-                  {error}
-                </p>
-              ) : (
+                  ZIP URL
+                </label>
+                <Input
+                  autoFocus
+                  aria-describedby={helperId}
+                  aria-invalid={trimmed.length > 0 && !isValid ? true : undefined}
+                  autoComplete="url"
+                  id={inputId}
+                  inputMode="url"
+                  invalid={trimmed.length > 0 && !isValid}
+                  name="url"
+                  placeholder={EXAMPLE_URL}
+                  size="lg"
+                  spellCheck={false}
+                  type="url"
+                  value={url}
+                  onChange={(event) => {
+                    setUrl(event.target.value);
+                    if (submittedUrl) setSubmittedUrl(null);
+                    if (submitError) setSubmitError(null);
+                  }}
+                />
                 <p className="text-caption text-text-muted" id={helperId}>
-                  Only <span className="font-mono">.zip</span> files up to {MAX_SIZE_LABEL}. Your
-                  file is not uploaded anywhere — this page is a placeholder for the intake step.
+                  The URL must be reachable by SONDA and end in{' '}
+                  <span className="font-mono">.zip</span>. Public links only — gated archives are
+                  handled by the Private Website option.
                 </p>
-              )}
+              </div>
 
               <div className="flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-caption text-text-muted">
-                  You can swap the file before SONDA starts.
+                  You can review and adjust the URL before SONDA starts.
                 </p>
                 <Button
                   aria-label="Start SONDA investigation"
@@ -362,26 +248,59 @@ const ZipReviewPage: React.FC = () => {
                   type="submit"
                   variant="primary"
                 >
-                  Start Investigation
-                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                      Starting investigation…
+                    </>
+                  ) : (
+                    <>
+                      Start Investigation
+                      <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
 
-        {/* Local acknowledgement — silent until the user submits. */}
-        {submittedFile ? (
+        {/* Submit error */}
+        {submitError ? (
           <div
-            aria-live="polite"
+            aria-live="assertive"
+            className="mt-6 flex items-start gap-3 rounded-md border border-error/30 bg-error/5 p-4 text-caption text-text-primary"
+            role="alert"
+          >
+            <AlertCircle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-error" />
+            <p>
+              <span className="font-semibold">Could not start the review.</span> {submitError}
+            </p>
+          </div>
+        ) : null}
+
+        {/* In-flight state */}
+        <div aria-live="polite" className="sr-only" id={liveRegionId} role="status">
+          {submittedUrl
+            ? isSubmitting
+              ? `Investigation started for ${submittedUrl}. Redirecting…`
+              : `Investigation completed for ${submittedUrl}.`
+            : ''}
+        </div>
+        {submittedUrl && !submitError && isSubmitting ? (
+          <div
+            aria-hidden="false"
             className="mt-6 flex items-start gap-3 rounded-md border border-primary/30 bg-primary-soft/60 p-4 text-caption text-text-primary"
             role="status"
           >
-            <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <Loader2
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary"
+            />
             <p>
-              <span className="font-semibold">Investigation queued.</span> SONDA will inspect{' '}
-              <span className="break-all font-mono">{submittedFile.name}</span> (
-              {formatBytes(submittedFile.size)}) and report back with a launch verdict.
+              <span className="font-semibold">Investigation in progress.</span> SONDA is downloading
+              and unpacking <span className="break-all font-mono">{submittedUrl}</span>. You will be
+              redirected to the verdict in a moment.
             </p>
           </div>
         ) : null}
@@ -393,7 +312,7 @@ const ZipReviewPage: React.FC = () => {
               What SONDA will analyze
             </CardTitle>
             <CardDescription className="text-body leading-relaxed text-text-secondary">
-              The jury scores your project against six focused dimensions before returning a single
+              The jury scores your project against five focused dimensions before returning a single
               launch verdict.
             </CardDescription>
           </CardHeader>
@@ -424,6 +343,13 @@ const ZipReviewPage: React.FC = () => {
                 );
               })}
             </ul>
+            <div className="mt-6 flex items-start gap-2 rounded-md border border-border/60 bg-background/40 p-3 text-caption text-text-secondary">
+              <LinkIcon aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                The URL must be reachable. SONDA fetches the archive in memory (up to 25 MB today)
+                and never writes it to disk.
+              </span>
+            </div>
           </CardContent>
         </Card>
       </div>

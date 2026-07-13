@@ -1,63 +1,59 @@
 /**
- * app/review/private-website/page.tsx — Private Website review form scaffold.
+ * app/review/private-website/page.tsx — Private Website review form.
  *
  * Sibling of /review/website, /review/github, and /review/zip: same layout,
- * same submit-no-op behaviour, same accessibility wiring. The intake here
- * is a private website URL plus the credentials SONDA would need to log in.
+ * same accessibility wiring. The intake here is a private website URL
+ * plus the credentials SONDA needs to log in.
  *
- * This page is a frontend-only SCAFFOLD:
- *  - The form is rendered with the same look and feel as the other review
- *    pages so the user can preview what private reviews will look like.
- *  - The "Coming soon" Badge is surfaced prominently in the form header
- *    and the submit button is disabled until later tasks wire up the
- *    real authenticated browser session flow.
- *  - No credentials are stored, sent, logged, or otherwise handled. The
- *    field state lives only in component state and is never sent to any
- *    backend, analytics, or third party. The page intentionally does
- *    not run credential validation, password rules, or even length
- *    checks beyond "non-empty" — this is a UI scaffold, not a credential
- *    intake.
+ * The form POSTs to /api/reviews with the credentials; the API forwards
+ * them to the evidence collector which applies HTTP Basic Auth on the
+ * first request. Credentials are never written to the session row or
+ * to disk — they live in the request body for the duration of the
+ * pipeline only.
  *
  * Design
  *  - Mirrors the other review pages: back link → eyebrow / title /
  *    description → form card → info card.
  *  - Form fields: Website URL, Username, Password, Optional 2FA Code,
  *    Optional Notes (textarea). All inputs use the existing Input /
- *    Textarea primitives, the primary-soft icon tile, and the same
- *    max-width container.
- *  - A "Coming soon" Badge in the form header makes the disabled state
- *    honest without making the page look broken.
+ *    Textarea primitives.
  *
  * Accessibility
  *  - Wrapped in a semantic <main>.
  *  - The <form> is a real <form>; every field has an associated
  *    <label> and aria-describedby pointing at the helper text.
- *  - Password field uses a native type="password" input — that is the
- *    OS-level signal for the field, not a credential handling decision.
- *  - On submit we call event.preventDefault() to keep this static.
- *  - An aria-live region announces the local acknowledgement so screen
- *    readers hear the change (only fires when the user does manage to
- *    submit, which is not currently possible since the submit button
- *    is disabled — kept in for parity with the sibling pages).
+ *  - Password field uses a native type="password" input.
+ *  - On submit we call event.preventDefault() and POST to the API.
+ *  - An aria-live region announces the in-flight state.
  *
- * Out of scope (per task)
- *  - No backend, no API, no Playwright, no real authenticated sessions.
- *  - No credential storage, no credential validation, no logging.
- *  - No security guarantees implied by the form layout.
+ * Out of scope
+ *  - Session-cookie / SSO / 2FA-aware auth flows.
+ *  - Credential storage beyond the request lifetime.
+ *  - Security guarantees beyond TLS.
  */
 
 'use client';
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { LucideIcon } from 'lucide-react';
-import { ArrowLeft, ArrowRight, Lock, LogIn, Map, ShieldCheck } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  Loader2,
+  Lock,
+  LogIn,
+  Map,
+  ShieldCheck,
+} from 'lucide-react';
 
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { createReview } from '@/lib/review-api';
 
 interface AnalysisItem {
   /** Short title shown in bold. */
@@ -106,29 +102,43 @@ const isLikelyUrl = (value: string): boolean => {
 };
 
 const PrivateWebsiteReviewPage: React.FC = () => {
+  const router = useRouter();
   const [url, setUrl] = React.useState<string>('');
   const [username, setUsername] = React.useState<string>('');
   const [password, setPassword] = React.useState<string>('');
   const [twoFactor, setTwoFactor] = React.useState<string>('');
   const [notes, setNotes] = React.useState<string>('');
-  const [submitted, setSubmitted] = React.useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = React.useState<boolean>(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
-  // "Non-empty" is the only check we do — this is a scaffold, not a
-  // credential intake. Never validate password rules, never log, never
-  // send.
+  // Non-empty is the only check we do — never validate password
+  // rules, never log, never echo the values back.
   const urlTrimmed = url.trim();
   const usernameTrimmed = username.trim();
   const passwordTrimmed = password.trim();
   const isValid =
     isLikelyUrl(urlTrimmed) && usernameTrimmed.length > 0 && passwordTrimmed.length > 0;
+  const canSubmit = isValid && !isSubmitting;
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!isValid) return;
-    // Frontend only — acknowledge locally; the real flow is wired up in
-    // a later task. Credentials are intentionally not stored, sent, or
-    // logged anywhere.
-    setSubmitted(true);
+    if (!isValid || isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmitError(null);
+    const result = await createReview({
+      type: 'private',
+      target: urlTrimmed,
+      username: usernameTrimmed,
+      password: passwordTrimmed,
+      twoFactorCode: twoFactor.trim() || undefined,
+      notes: notes.trim() || undefined,
+    });
+    if (!result.ok) {
+      setIsSubmitting(false);
+      setSubmitError(result.message);
+      return;
+    }
+    router.push(`/review/${result.id}`);
   };
 
   // Stable ids for aria-describedby / aria-labelledby wiring.
@@ -177,32 +187,27 @@ const PrivateWebsiteReviewPage: React.FC = () => {
         {/* Form card */}
         <Card className="mt-12">
           <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <span
-                  aria-hidden="true"
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-primary-soft text-primary"
-                >
-                  <Lock className="h-5 w-5" strokeWidth={2} />
-                </span>
-                <span
-                  aria-hidden="true"
-                  className="font-display text-caption font-semibold uppercase tracking-widest text-text-muted"
-                >
-                  Step 1 · Provide access
-                </span>
-              </div>
-              <Badge aria-label="Status: Coming soon" variant="secondary">
-                Coming soon
-              </Badge>
+            <div className="flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-primary-soft text-primary"
+              >
+                <Lock className="h-5 w-5" strokeWidth={2} />
+              </span>
+              <span
+                aria-hidden="true"
+                className="font-display text-caption font-semibold uppercase tracking-widest text-text-muted"
+              >
+                Step 1 · Provide access
+              </span>
             </div>
             <CardTitle as="h2" className="mt-4 text-h4">
               Private Website Access
             </CardTitle>
             <CardDescription className="text-body leading-relaxed text-text-secondary">
-              This form is a frontend scaffold for the upcoming authenticated review flow. The
-              fields below are shown for layout only — credentials are not stored, sent, or used in
-              any way on this page.
+              Provide the URL and credentials SONDA needs to log in. Use a review-only account
+              whenever possible. Credentials are forwarded to the evidence collector and never
+              written to the session row.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -238,7 +243,7 @@ const PrivateWebsiteReviewPage: React.FC = () => {
                   value={url}
                   onChange={(event) => {
                     setUrl(event.target.value);
-                    if (submitted) setSubmitted(false);
+                    if (submitError) setSubmitError(null);
                   }}
                 />
                 <p className="text-caption text-text-muted" id={urlHelperId}>
@@ -271,7 +276,7 @@ const PrivateWebsiteReviewPage: React.FC = () => {
                   value={username}
                   onChange={(event) => {
                     setUsername(event.target.value);
-                    if (submitted) setSubmitted(false);
+                    if (submitError) setSubmitError(null);
                   }}
                 />
                 <p className="text-caption text-text-muted" id={usernameHelperId}>
@@ -299,7 +304,7 @@ const PrivateWebsiteReviewPage: React.FC = () => {
                   value={password}
                   onChange={(event) => {
                     setPassword(event.target.value);
-                    if (submitted) setSubmitted(false);
+                    if (submitError) setSubmitError(null);
                   }}
                 />
                 <p className="text-caption text-text-muted" id={passwordHelperId}>
@@ -329,7 +334,7 @@ const PrivateWebsiteReviewPage: React.FC = () => {
                   value={twoFactor}
                   onChange={(event) => {
                     setTwoFactor(event.target.value);
-                    if (submitted) setSubmitted(false);
+                    if (submitError) setSubmitError(null);
                   }}
                 />
                 <p className="text-caption text-text-muted" id={twoFactorHelperId}>
@@ -356,7 +361,7 @@ const PrivateWebsiteReviewPage: React.FC = () => {
                   value={notes}
                   onChange={(event) => {
                     setNotes(event.target.value);
-                    if (submitted) setSubmitted(false);
+                    if (submitError) setSubmitError(null);
                   }}
                 />
                 <p className="text-caption text-text-muted" id={notesHelperId}>
@@ -367,38 +372,81 @@ const PrivateWebsiteReviewPage: React.FC = () => {
 
               <div className="flex flex-col-reverse items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-caption text-text-muted">
-                  The submit button is disabled while this flow is in scaffold.
+                  SONDA only forwards credentials to the evidence collector and never writes them to
+                  the database.
                 </p>
                 <Button
-                  disabled
                   aria-label="Start SONDA investigation"
                   className="w-full sm:w-auto"
+                  disabled={!canSubmit}
                   size="lg"
                   type="submit"
                   variant="primary"
                 >
-                  Start Investigation
-                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                      Starting investigation…
+                    </>
+                  ) : (
+                    <>
+                      Start Investigation
+                      <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
 
-        {/* Local acknowledgement — silent until the user submits. */}
+        {/* Submit error */}
+        {submitError ? (
+          <div
+            aria-live="assertive"
+            className="mt-6 flex items-start gap-3 rounded-md border border-error/30 bg-error/5 p-4 text-caption text-text-primary"
+            role="alert"
+          >
+            <AlertCircle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-error" />
+            <p>
+              <span className="font-semibold">Could not start the review.</span> {submitError}
+            </p>
+          </div>
+        ) : null}
+
+        {/* In-flight state */}
+        {isSubmitting ? (
+          <div
+            aria-hidden="false"
+            className="mt-6 flex items-start gap-3 rounded-md border border-primary/30 bg-primary-soft/60 p-4 text-caption text-text-primary"
+            role="status"
+          >
+            <Loader2
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary"
+            />
+            <p>
+              <span className="font-semibold">Investigation in progress.</span> SONDA is
+              authenticating and exploring the site. You will be redirected to the verdict in a
+              moment.
+            </p>
+          </div>
+        ) : null}
+
+        {/* Local acknowledgement for screen readers. */}
         <div aria-live="polite" className="sr-only" id={liveRegionId} role="status">
-          {submitted ? 'Investigation queued.' : ''}
+          {isSubmitting ? 'Investigation started. Redirecting…' : ''}
         </div>
 
         {/* Info card — what SONDA will analyze once the flow ships. */}
         <Card className="mt-8" noHover={true}>
           <CardHeader>
             <CardTitle as="h2" className="text-h5">
-              What this flow will support
+              What SONDA will analyze
             </CardTitle>
             <CardDescription className="text-body leading-relaxed text-text-secondary">
-              Once the private-website review ships, the jury will run a full authenticated session
-              against the four capabilities below.
+              The jury runs a full authenticated session against the four capabilities below. Use a
+              review-only account so destructive actions are off-limits.
             </CardDescription>
           </CardHeader>
           <CardContent>

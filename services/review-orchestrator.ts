@@ -53,7 +53,12 @@
 
 import { prisma, ReviewType, ReviewStatus, type Prisma } from '@/lib/db';
 import { isProduction } from '@/lib/env';
-import { runReviewPipeline, type ReviewPipelineResult } from '@/features/review-engine/pipeline';
+import {
+  runReviewPipeline,
+  type ReviewPipelineResult,
+  type RunReviewPipelineOptions,
+} from '@/features/review-engine/pipeline';
+import type { PrivateWebsiteCredentials } from '@/features/private-review/collect';
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -69,6 +74,19 @@ import { runReviewPipeline, type ReviewPipelineResult } from '@/features/review-
  * engine lands and the relation starts being populated.
  */
 type ReviewSessionRow = Prisma.ReviewSessionGetPayload<Record<string, never>>;
+
+/**
+ * Options the API layer can pass to the orchestrator. Carries
+ * per-request data that is not stored on the session row
+ * (credentials, 2FA codes, free-form notes) and is forwarded
+ * to the evidence collector.
+ */
+export type RunReviewOptions = RunReviewPipelineOptions & {
+  /** Optional 2FA code for private-website reviews. */
+  twoFactorCode?: string;
+  /** Optional reviewer notes. */
+  notes?: string;
+};
 
 /**
  * Result a placeholder handler returns.
@@ -304,7 +322,10 @@ export const failReview = async (sessionId: string, reason: string): Promise<Rev
  * Signature shared by every type-specific handler. Each handler
  * receives the loaded session and returns a `ReviewHandlerResult`.
  */
-type ReviewHandler = (session: ReviewSessionRow) => Promise<ReviewHandlerResult>;
+type ReviewHandler = (
+  session: ReviewSessionRow,
+  options: RunReviewOptions,
+) => Promise<ReviewHandlerResult>;
 
 /**
  * Dispatch a session to its type-specific handler.
@@ -315,6 +336,7 @@ type ReviewHandler = (session: ReviewSessionRow) => Promise<ReviewHandlerResult>
  */
 export const dispatchReviewHandler = async (
   session: ReviewSessionRow,
+  options: RunReviewOptions = {},
 ): Promise<ReviewHandlerResult> => {
   const handler: ReviewHandler = ((): ReviewHandler => {
     switch (session.type) {
@@ -338,7 +360,7 @@ export const dispatchReviewHandler = async (
     }
   })();
 
-  return handler(session);
+  return handler(session, options);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -355,14 +377,14 @@ export const dispatchReviewHandler = async (
 // the source-specific logic.
 
 const handlerFor = (kind: 'website' | 'github' | 'zip' | 'private'): ReviewHandler => {
-  return async (session) => {
+  return async (session, options) => {
     if (!session.target || session.target.trim().length === 0) {
       throw new ReviewOrchestratorError(
         `${kind} review ${session.id} is missing a target.`,
         'INVALID_STATUS',
       );
     }
-    const result: ReviewPipelineResult = await runReviewPipeline(session);
+    const result: ReviewPipelineResult = await runReviewPipeline(session, options);
     return {
       handler: kind,
       status: 'completed',
@@ -424,7 +446,10 @@ export const runPrivateWebsiteReview: ReviewHandler = handlerFor('private');
  * user. *Unexpected* errors (DB outage, missing row, bad starting
  * status) are thrown as `ReviewOrchestratorError`.
  */
-export const runReview = async (sessionId: string): Promise<ReviewOrchestratorResult> => {
+export const runReview = async (
+  sessionId: string,
+  options: RunReviewOptions = {},
+): Promise<ReviewOrchestratorResult> => {
   // 1. Load. A missing row throws NOT_FOUND — the API layer maps
   //    that to 404.
   const session = await loadReviewSession(sessionId);
@@ -438,7 +463,7 @@ export const runReview = async (sessionId: string): Promise<ReviewOrchestratorRe
 
   // 3. Dispatch. Handler errors are caught and turned into FAILED.
   try {
-    const handlerResult = await dispatchReviewHandler(session);
+    const handlerResult = await dispatchReviewHandler(session, options);
 
     // 4a. RUNNING → COMPLETED.
     await completeReview(session.id, handlerResult);
