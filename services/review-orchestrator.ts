@@ -354,7 +354,8 @@ export const dispatchReviewHandler = async (
  * PLACEHOLDER — Public Website review.
  *
  * Future implementation: Playwright + Lighthouse + axe-core →
- * `WebsiteEvidenceBundle` → agent jury → verdict.
+ * `EvidenceBundle` (with `pageContent`, `metrics`, `accessibility`
+ * populated; `files` left off) → agent jury → verdict.
  */
 export const runWebsiteReview: ReviewHandler = async (session) => {
   if (!session.target || session.target.trim().length === 0) {
@@ -379,7 +380,9 @@ export const runWebsiteReview: ReviewHandler = async (session) => {
  * PLACEHOLDER — GitHub repository review.
  *
  * Future implementation: GitHub REST API (metadata, tree, README,
- * languages) → `GithubEvidenceBundle` → agent jury → verdict.
+ * languages) → `EvidenceBundle` (with `files` + `metrics` populated;
+ * `pageContent` and `accessibility` left off) → agent jury →
+ * verdict.
  */
 export const runGithubReview: ReviewHandler = async (session) => {
   if (!session.target || session.target.trim().length === 0) {
@@ -404,7 +407,9 @@ export const runGithubReview: ReviewHandler = async (session) => {
  * PLACEHOLDER — ZIP upload review.
  *
  * Future implementation: extract the archive, detect frameworks,
- * walk the file tree → `ZipEvidenceBundle` → agent jury → verdict.
+ * walk the file tree → `EvidenceBundle` (with `files` populated;
+ * `pageContent` and `accessibility` left off) → agent jury →
+ * verdict.
  */
 export const runZipReview: ReviewHandler = async (session) => {
   if (!session.target || session.target.trim().length === 0) {
@@ -430,7 +435,8 @@ export const runZipReview: ReviewHandler = async (session) => {
  *
  * Future implementation: authenticate with the supplied credentials,
  * then run the same pipeline as the public-website handler against
- * `PrivateEvidenceBundle` → agent jury → verdict.
+ * `EvidenceBundle` (with `pageContent`, `metrics`, `accessibility`
+ * populated; `files` left off) → agent jury → verdict.
  */
 export const runPrivateWebsiteReview: ReviewHandler = async (session) => {
   if (!session.target || session.target.trim().length === 0) {
