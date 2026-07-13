@@ -1,8 +1,20 @@
 // SONDA — Prisma schema
 //
-// This is a placeholder. Models will be added when persistence is introduced
-// (see README → Development Roadmap). The generator and datasource are wired
-// up so the project compiles and `prisma generate` succeeds out of the box.
+// Data model for SONDA's review pipeline. Persists each investigation
+// as a `ReviewSession` (the durable request and its current state) and
+// the eventual `ReviewResult` (the final jury verdict). Designed to be
+// source-agnostic so the same tables can back Public Website, GitHub,
+// ZIP, and Private Website reviews — the per-source collectors live in
+// `features/<source>-review/` and are not coupled to this schema.
+//
+// Database
+//   - PostgreSQL in production (Neon recommended for serverless).
+//   - The same engine is used in tests.
+//
+// Generator
+//   - Output is the default `node_modules/.prisma/client`. Import the
+//     typed client from `@/lib/db` (singleton) so dev hot-reload does
+//     not spawn a new client per request.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,9 +25,98 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// TODO(next-phase): add models for
-//   - ReviewSession
-//   - EvidenceBundle
-//   - ReviewerOutput
-//   - User  (when auth lands)
-//   - Account, Session, VerificationToken  (NextAuth)
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+// `ReviewType` — the source the user submitted.
+//
+// Aligned with `types/evidence.ts#ReviewSource`:
+//   WEBSITE          ↔  'website'
+//   GITHUB           ↔  'github'
+//   ZIP              ↔  'zip'
+//   PRIVATE_WEBSITE  ↔  'private'
+enum ReviewType {
+  WEBSITE
+  GITHUB
+  ZIP
+  PRIVATE_WEBSITE
+}
+
+// `ReviewStatus` — the lifecycle of a single investigation.
+//
+//   PENDING      Created, not yet picked up by a worker.
+//   RUNNING      An analyzer (browser / GitHub / ZIP / private) is
+//                actively producing evidence.
+//   COMPLETED    ReviewResult row attached; the jury has spoken.
+//   FAILED       The investigation could not be completed. The
+//                reason lives in the API/worker logs for this task;
+//                a dedicated failure column will land with the
+//                first analyzer.
+enum ReviewStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// -----------------------------------------------------------------------------
+// Models
+// -----------------------------------------------------------------------------
+
+// `ReviewSession` — one investigation request, end-to-end.
+//
+// `target` is intentionally a free-form `String`:
+//   - For WEBSITE / PRIVATE_WEBSITE: the URL the user submitted.
+//   - For GITHUB:                    the full `https://github.com/owner/repo` URL.
+//   - For ZIP:                       a reference to the uploaded artifact
+//                                   (e.g. an object-storage key); the upload
+//                                   flow is wired up in a later task, so for
+//                                   now the API just stores the user-supplied
+//                                   label verbatim.
+//
+// `userId` is optional because authentication is not part of this task.
+// When auth lands (NextAuth) we add a `User` model and a relation here.
+model ReviewSession {
+  id        String       @id @default(cuid())
+  userId    String?
+  type      ReviewType
+  status    ReviewStatus @default(PENDING)
+  target    String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  result ReviewResult?
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@map("review_sessions")
+}
+
+// `ReviewResult` — the jury's final verdict for a `ReviewSession`.
+//
+// Created only when the orchestrator finishes collecting evidence and
+// every reviewer has produced an output. Until then, no row exists.
+//
+// `verdict` is the categorical decision (`ship` / `refine` / `hold` or
+// whatever the verdict engine lands on). It is stored as a `String`
+// rather than an enum to keep this task's schema stable; the verdict
+// engine will own the enum on the application side.
+//
+// `summary` is the human-readable headline + a longer write-up. Kept
+// in a single `Text` column for now; a normalized `summary` + `body`
+// split can be added later without a breaking schema change.
+model ReviewResult {
+  id           String   @id @default(cuid())
+  sessionId    String   @unique
+  overallScore Int
+  verdict      String
+  summary      String
+  createdAt    DateTime @default(now())
+
+  session ReviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@map("review_results")
+}
