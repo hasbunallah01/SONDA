@@ -18,5 +18,6 @@ export async function runUxReviewer(ctx: ReviewerContext): Promise<ReviewerOutpu
     strengths: [],
     weaknesses: [],
     priorityFixes: [],
+    schemaVersion: 1,
   };
 }

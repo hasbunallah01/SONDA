@@ -18,5 +18,6 @@ export async function runFirstUserReviewer(ctx: ReviewerContext): Promise<Review
     strengths: [],
     weaknesses: [],
     priorityFixes: [],
+    schemaVersion: 1,
   };
 }
