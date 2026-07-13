@@ -54,6 +54,7 @@ import { z } from 'zod';
 
 import { prisma, ReviewType } from '@/lib/db';
 import { isProduction } from '@/lib/env';
+import { runReview } from '@/services/review-orchestrator';
 
 /* -------------------------------------------------------------------------- */
 /* Request validation                                                         */
@@ -135,8 +136,20 @@ const errorResponse = (message: string, status: number, details?: unknown): Next
 /**
  * POST /api/reviews
  *
- * Creates a `ReviewSession` in the `PENDING` status. No side effects,
- * no worker dispatch — that lands in the orchestrator task.
+ * Creates a `ReviewSession` in the `PENDING` status, then
+ * synchronously drives it through the full review pipeline:
+ *
+ *   1. PENDING → RUNNING (`startReview`).
+ *   2. Collect evidence (per `type`).
+ *   3. Persist evidence on the session.
+ *   4. Run every reviewer.
+ *   5. Compute and persist the verdict.
+ *   6. RUNNING → COMPLETED (or FAILED on any error).
+ *
+ * The request waits for the pipeline to finish before returning,
+ * so the response reflects the final status. The client can
+ * also poll `GET /api/reviews/:id` for progress if the
+ * pipeline is moved to a background worker later.
  */
 export const POST = async (request: Request): Promise<NextResponse> => {
   // 1. Parse JSON body. A malformed body is a 400, not a 500.
@@ -156,9 +169,9 @@ export const POST = async (request: Request): Promise<NextResponse> => {
 
   const { type, target } = parsed.data;
 
-  // 3. Persist the session. We catch DB errors and surface a generic
-  //    500 — the user does not need to know whether the connection
-  //    string is bad vs. the table is missing.
+  // 3. Persist the session in PENDING. We catch DB errors and
+  //    surface a generic 500.
+  let sessionId: string;
   try {
     const session = await prisma.reviewSession.create({
       data: {
@@ -173,19 +186,8 @@ export const POST = async (request: Request): Promise<NextResponse> => {
         createdAt: true,
       },
     });
-
-    return NextResponse.json(
-      {
-        id: session.id,
-        status: session.status,
-        type: session.type,
-        createdAt: session.createdAt.toISOString(),
-      },
-      { status: 201 },
-    );
+    sessionId = session.id;
   } catch (error) {
-    // Log to the server console so operators can diagnose.
-    // The message itself is hidden in production responses.
     // eslint-disable-next-line no-console
     console.error('[api/reviews] failed to create session', error);
 
@@ -196,6 +198,64 @@ export const POST = async (request: Request): Promise<NextResponse> => {
         : 'Failed to create review session.';
 
     return errorResponse(message, 500);
+  }
+
+  // 4. Drive the pipeline. The orchestrator handles every
+  //    status transition; on any failure the session is
+  //    marked FAILED and the response reports it.
+  try {
+    const result = await runReview(sessionId);
+
+    // Re-read the session so the response carries the final
+    // status (and updated timestamp) that the orchestrator
+    // wrote.
+    const final = await prisma.reviewSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, type: true, status: true, createdAt: true, updatedAt: true },
+    });
+    if (!final) {
+      return errorResponse(`Review session ${sessionId} disappeared.`, 500);
+    }
+
+    // 200 even on FAILED — the client should GET the session to
+    // see the per-reviewer breakdown. 201 is "session created",
+    // not "session succeeded".
+    return NextResponse.json(
+      {
+        id: final.id,
+        status: final.status,
+        type: final.type,
+        createdAt: final.createdAt.toISOString(),
+        updatedAt: final.updatedAt.toISOString(),
+        ok: result.ok,
+        reason: result.ok ? undefined : result.reason,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    // An unexpected (non-handler) error from the orchestrator.
+    // The session is in a FAILED state by the time we get here.
+    // eslint-disable-next-line no-console
+    console.error('[api/reviews] orchestrator failed', error);
+
+    const final = await prisma.reviewSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, type: true, status: true, createdAt: true, updatedAt: true },
+    });
+    if (!final) {
+      return errorResponse(`Review session ${sessionId} disappeared.`, 500);
+    }
+
+    const message = isProduction
+      ? 'Review failed unexpectedly.'
+      : error instanceof Error
+        ? `Review failed unexpectedly: ${error.message}`
+        : 'Review failed unexpectedly.';
+
+    return errorResponse(message, 500, {
+      sessionId: final.id,
+      status: final.status,
+    });
   }
 };
 
