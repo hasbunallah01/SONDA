@@ -132,10 +132,15 @@ model ReviewSession {
   type      ReviewType
   status    ReviewStatus @default(PENDING)
   target    String
+  /// Normalized evidence bundle produced by the source-specific
+  /// collector. Stored as JSONB. Nullable because not every
+  /// session has a real collector yet (the placeholders leave
+  /// this null).
+  evidence  Json?
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  result         ReviewResult?
+  result          ReviewResult?
   reviewerResults ReviewerResult[]
 
   @@index([status])

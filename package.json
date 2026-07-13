@@ -17,6 +17,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,md,json,css,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,md,json,css,yml,yaml}\"",
     "type-check": "tsc --noEmit",
+    "test": "tsx tests/verdict-engine.test.ts && tsx tests/reviewers.test.ts",
     "prepare": "husky || true",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

@@ -4,19 +4,33 @@ SONDA's jury is composed of **autonomous AI agents**, one per reviewer perspecti
 
 1. Receives a normalized **Evidence Bundle** (no source-specific data).
 2. Loads its prompt from `prompts/<reviewer>.md`.
-3. Calls the LLM (placeholder for now).
+3. Scores the bundle deterministically (v0 — LLM-backed variants land via `create<Name>Reviewer` factories).
 4. Returns a structured `ReviewerOutput` (score, summary, strengths, weaknesses, fixes).
 
 ## Current agents
 
-| Folder        | Role                    | Prompt                  |
-| ------------- | ----------------------- | ----------------------- |
-| `qa/`         | QA Engineer             | `prompts/qa.md`         |
-| `ux/`         | UX Designer             | `prompts/ux.md`         |
-| `marketing/`  | Marketing / GTM Expert  | `prompts/marketing.md`  |
-| `investor/`   | Investor / Funding Lens | `prompts/investor.md`   |
-| `judge/`      | Hackathon Judge         | `prompts/judge.md`      |
-| `first-user/` | First-time User         | `prompts/first-user.md` |
+| Folder        | Role                    | Prompt                  | Task  |
+| ------------- | ----------------------- | ----------------------- | ----- |
+| `qa/`         | QA Engineer             | `prompts/qa.md`         | 6.3.3 |
+| `ux/`         | UX Designer             | `prompts/ux.md`         | 6.4   |
+| `marketing/`  | Marketing / GTM Expert  | `prompts/marketing.md`  | 6.5   |
+| `investor/`   | Investor / Funding Lens | `prompts/investor.md`   | 6.6   |
+| `judge/`      | Hackathon Judge         | `prompts/judge.md`      | 6.7   |
+| `first-user/` | First-time User         | `prompts/first-user.md` | 6.8   |
+
+## Registry
+
+Every reviewer is registered in `agents/registry.ts`:
+
+```ts
+import { reviewerRegistry, reviewerMap, getReviewer } from '@/agents/registry';
+
+reviewerRegistry; // ReadonlyArray<ReviewerModule>
+reviewerMap; // Readonly<Record<ReviewerId, ReviewerModule>>
+getReviewer('qa'); // ReviewerModule | undefined
+```
+
+The reviewer pipeline (`services/reviewers.ts`) iterates the registry. Adding a new reviewer = one new entry in `agents/registry.ts` + one new `agents/<name>/` module.
 
 ## Shared contract (Task 6.3.2)
 
