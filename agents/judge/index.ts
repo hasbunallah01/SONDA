@@ -18,5 +18,6 @@ export async function runJudgeReviewer(ctx: ReviewerContext): Promise<ReviewerOu
     strengths: [],
     weaknesses: [],
     priorityFixes: [],
+    schemaVersion: 1,
   };
 }

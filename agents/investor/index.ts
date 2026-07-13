@@ -18,5 +18,6 @@ export async function runInvestorReviewer(ctx: ReviewerContext): Promise<Reviewe
     strengths: [],
     weaknesses: [],
     priorityFixes: [],
+    schemaVersion: 1,
   };
 }

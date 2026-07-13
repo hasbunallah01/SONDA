@@ -18,5 +18,6 @@ export async function runQaReviewer(ctx: ReviewerContext): Promise<ReviewerOutpu
     strengths: [],
     weaknesses: [],
     priorityFixes: [],
+    schemaVersion: 1,
   };
 }
