@@ -14,6 +14,8 @@ import { Inter, JetBrains_Mono, Space_Grotesk } from 'next/font/google';
 
 import './globals.css';
 
+import { Navigation } from '@/components/landing/navigation';
+
 /* ---------------------------------------------------------------------------
  * Font configuration
  *
@@ -72,7 +74,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${inter.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable}`}
       lang="en"
     >
-      <body>{children}</body>
+      <body>
+        <Navigation />
+        {children}
+      </body>
     </html>
   );
 }
