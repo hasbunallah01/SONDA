@@ -77,6 +77,17 @@ const REVIEWER_TYPE_MAP: Readonly<Record<ReviewerId, ReviewerType>> = {
  *          application-side `ReviewerResultRow` shape.
  */
 export async function saveReviewerResult(input: ReviewerResultInput): Promise<ReviewerResultRow> {
+  return saveQaReviewerResult(input);
+}
+
+/**
+ * Canonical per-reviewer alias. Other reviewers expose
+ * `save<Name>ReviewerResult`; QA originally exposed
+ * `saveReviewerResult` (no `Qa` prefix). Both names point at
+ * the same implementation so callers can use a consistent
+ * naming convention.
+ */
+export async function saveQaReviewerResult(input: ReviewerResultInput): Promise<ReviewerResultRow> {
   const reviewerEnum = REVIEWER_TYPE_MAP[input.reviewer];
 
   const row = await prisma.reviewerResult.upsert({
