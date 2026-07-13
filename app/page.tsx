@@ -9,6 +9,7 @@
 import { Hero } from '@/components/landing/hero';
 import { HowItWorks } from '@/components/landing/how-it-works';
 import { AiJury } from '@/components/landing/ai-jury';
+import { Features } from '@/components/landing/features';
 
 export default function HomePage() {
   return (
@@ -16,6 +17,7 @@ export default function HomePage() {
       <Hero />
       <HowItWorks />
       <AiJury />
+      <Features />
     </>
   );
 }
