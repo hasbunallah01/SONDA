@@ -54,7 +54,7 @@ import { z } from 'zod';
 
 import { prisma, ReviewType } from '@/lib/db';
 import { isProduction } from '@/lib/env';
-import { runReview } from '@/services/review-orchestrator';
+import { runReview, type RunReviewOptions } from '@/services/review-orchestrator';
 
 /* -------------------------------------------------------------------------- */
 /* Request validation                                                         */
@@ -74,6 +74,17 @@ const createReviewSchema = z.object({
       message: `type must be one of: ${reviewTypeValues.join(', ')}`,
     }),
   }),
+  /**
+   * Optional credentials for `type: "private"` reviews. Forwarded
+   * to the evidence collector via the orchestrator's
+   * `RunReviewOptions.privateCredentials` field. All four fields
+   * are optional; the collector applies HTTP Basic Auth when
+   * both `username` and `password` are supplied.
+   */
+  username: z.string().min(1).max(256).optional(),
+  password: z.string().min(1).max(256).optional(),
+  twoFactorCode: z.string().min(1).max(64).optional(),
+  notes: z.string().max(2000).optional(),
   /**
    * `target` is whatever the user submitted:
    *   - WEBSITE / PRIVATE_WEBSITE → URL.
@@ -167,7 +178,7 @@ export const POST = async (request: Request): Promise<NextResponse> => {
     return errorResponse('Invalid request body.', 400, parsed.error.issues);
   }
 
-  const { type, target } = parsed.data;
+  const { type, target, username, password, twoFactorCode, notes } = parsed.data;
 
   // 3. Persist the session in PENDING. We catch DB errors and
   //    surface a generic 500.
@@ -204,7 +215,13 @@ export const POST = async (request: Request): Promise<NextResponse> => {
   //    status transition; on any failure the session is
   //    marked FAILED and the response reports it.
   try {
-    const result = await runReview(sessionId);
+    const options: RunReviewOptions = {
+      privateCredentials:
+        type === 'private' && (username || password) ? { username, password } : undefined,
+      twoFactorCode,
+      notes,
+    };
+    const result = await runReview(sessionId, options);
 
     // Re-read the session so the response carries the final
     // status (and updated timestamp) that the orchestrator

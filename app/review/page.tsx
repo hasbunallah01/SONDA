@@ -97,8 +97,8 @@ const REVIEW_TYPES: ReviewType[] = [
     description:
       'URL plus the credentials SONDA needs to enter. Best for staging environments and behind-login products.',
     icon: Lock,
-    status: 'coming-soon',
-    statusLabel: 'Coming soon',
+    status: 'available',
+    statusLabel: 'Available',
     href: '/review/private-website',
   },
 ];

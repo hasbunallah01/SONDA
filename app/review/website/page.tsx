@@ -36,11 +36,14 @@
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
   Globe,
+  Loader2,
   ShieldCheck,
   Sparkles,
   Wrench,
@@ -50,6 +53,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { createReview } from '@/lib/review-api';
 
 interface AnalysisItem {
   /** Short title shown in bold. */
@@ -105,18 +109,34 @@ const normalizeUrl = (value: string): string => {
 };
 
 const WebsiteReviewPage: React.FC = () => {
+  const router = useRouter();
   const [url, setUrl] = React.useState<string>('');
   const [submittedUrl, setSubmittedUrl] = React.useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = React.useState<boolean>(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
   const trimmed = url.trim();
   const isValid = isLikelyUrl(trimmed);
+  const canSubmit = isValid && !isSubmitting;
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!isValid) return;
-    // Frontend only — acknowledge locally; the real flow is wired up in
-    // a later task.
-    setSubmittedUrl(normalizeUrl(trimmed));
+    if (!isValid || isSubmitting) return;
+    const normalized = normalizeUrl(trimmed);
+    setIsSubmitting(true);
+    setSubmitError(null);
+    setSubmittedUrl(normalized);
+    const result = await createReview({ type: 'website', target: normalized });
+    if (!result.ok) {
+      setIsSubmitting(false);
+      setSubmitError(result.message);
+      return;
+    }
+    // Pipeline ran synchronously. Either way (COMPLETED or
+    // FAILED) the results page is the right destination — it
+    // renders the verdict when ready and the failure state
+    // when not.
+    router.push(`/review/${result.id}`);
   };
 
   // Stable id for aria-describedby / aria-labelledby wiring.
@@ -225,34 +245,64 @@ const WebsiteReviewPage: React.FC = () => {
                 <Button
                   aria-label="Start SONDA investigation"
                   className="w-full sm:w-auto"
-                  disabled={!isValid}
+                  disabled={!canSubmit}
                   size="lg"
                   type="submit"
                   variant="primary"
                 >
-                  Start Investigation
-                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                      Starting investigation…
+                    </>
+                  ) : (
+                    <>
+                      Start Investigation
+                      <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
 
+        {/* Submit error */}
+        {submitError ? (
+          <div
+            aria-live="assertive"
+            className="mt-6 flex items-start gap-3 rounded-md border border-error/30 bg-error/5 p-4 text-caption text-text-primary"
+            role="alert"
+          >
+            <AlertCircle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-error" />
+            <p>
+              <span className="font-semibold">Could not start the review.</span> {submitError}
+            </p>
+          </div>
+        ) : null}
+
         {/* Local acknowledgement — silent until the user submits. */}
         <div aria-live="polite" className="sr-only" id={liveRegionId} role="status">
-          {submittedUrl ? `Investigation queued for ${submittedUrl}.` : ''}
+          {submittedUrl
+            ? isSubmitting
+              ? `Investigation started for ${submittedUrl}. Redirecting…`
+              : `Investigation completed for ${submittedUrl}.`
+            : ''}
         </div>
-        {submittedUrl ? (
+        {submittedUrl && !submitError && isSubmitting ? (
           <div
             aria-hidden="false"
             className="mt-6 flex items-start gap-3 rounded-md border border-primary/30 bg-primary-soft/60 p-4 text-caption text-text-primary"
             role="status"
           >
-            <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <Loader2
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary"
+            />
             <p>
-              <span className="font-semibold">Investigation queued.</span> SONDA will explore{' '}
-              <span className="break-all font-mono">{submittedUrl}</span> and report back with a
-              launch verdict.
+              <span className="font-semibold">Investigation in progress.</span> SONDA is exploring{' '}
+              <span className="break-all font-mono">{submittedUrl}</span>. You will be redirected to
+              the verdict in a moment.
             </p>
           </div>
         ) : null}

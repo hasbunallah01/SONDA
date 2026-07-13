@@ -29,14 +29,16 @@
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { LucideIcon } from 'lucide-react';
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   BookOpen,
-  CheckCircle2,
   Github,
   Layers,
+  Loader2,
   Rocket,
   TreePine,
 } from 'lucide-react';
@@ -44,6 +46,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { createReview } from '@/lib/review-api';
 
 interface AnalysisItem {
   /** Short title shown in bold. */
@@ -101,18 +104,29 @@ const isLikelyGitHubRepoUrl = (value: string): boolean => {
 };
 
 const GithubReviewPage: React.FC = () => {
+  const router = useRouter();
   const [url, setUrl] = React.useState<string>('');
   const [submittedUrl, setSubmittedUrl] = React.useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = React.useState<boolean>(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
 
   const trimmed = url.trim();
   const isValid = isLikelyGitHubRepoUrl(trimmed);
+  const canSubmit = isValid && !isSubmitting;
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    if (!isValid) return;
-    // Frontend only — acknowledge locally; the real flow is wired up in
-    // a later task.
+    if (!isValid || isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmitError(null);
     setSubmittedUrl(trimmed);
+    const result = await createReview({ type: 'github', target: trimmed });
+    if (!result.ok) {
+      setIsSubmitting(false);
+      setSubmitError(result.message);
+      return;
+    }
+    router.push(`/review/${result.id}`);
   };
 
   // Stable ids for aria-describedby / aria-labelledby wiring.
@@ -221,31 +235,57 @@ const GithubReviewPage: React.FC = () => {
                 <Button
                   aria-label="Start SONDA investigation"
                   className="w-full sm:w-auto"
-                  disabled={!isValid}
+                  disabled={!canSubmit}
                   size="lg"
                   type="submit"
                   variant="primary"
                 >
-                  Start Investigation
-                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+                      Starting investigation…
+                    </>
+                  ) : (
+                    <>
+                      Start Investigation
+                      <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                    </>
+                  )}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
 
+        {/* Submit error */}
+        {submitError ? (
+          <div
+            aria-live="assertive"
+            className="mt-6 flex items-start gap-3 rounded-md border border-error/30 bg-error/5 p-4 text-caption text-text-primary"
+            role="alert"
+          >
+            <AlertCircle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-error" />
+            <p>
+              <span className="font-semibold">Could not start the review.</span> {submitError}
+            </p>
+          </div>
+        ) : null}
+
         {/* Local acknowledgement — silent until the user submits. */}
-        {submittedUrl ? (
+        {submittedUrl && !submitError && isSubmitting ? (
           <div
             aria-live="polite"
             className="mt-6 flex items-start gap-3 rounded-md border border-primary/30 bg-primary-soft/60 p-4 text-caption text-text-primary"
             role="status"
           >
-            <CheckCircle2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <Loader2
+              aria-hidden="true"
+              className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary"
+            />
             <p>
-              <span className="font-semibold">Investigation queued.</span> SONDA will review{' '}
-              <span className="break-all font-mono">{submittedUrl}</span> and report back with a
-              launch verdict.
+              <span className="font-semibold">Investigation in progress.</span> SONDA is reviewing{' '}
+              <span className="break-all font-mono">{submittedUrl}</span>. You will be redirected to
+              the verdict in a moment.
             </p>
           </div>
         ) : null}
