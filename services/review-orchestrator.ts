@@ -53,6 +53,7 @@
 
 import { prisma, ReviewType, ReviewStatus, type Prisma } from '@/lib/db';
 import { isProduction } from '@/lib/env';
+import { runReviewPipeline, type ReviewPipelineResult } from '@/features/review-engine/pipeline';
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -341,121 +342,69 @@ export const dispatchReviewHandler = async (
 };
 
 /* -------------------------------------------------------------------------- */
-/* Placeholder handlers                                                       */
+/* Handlers (one per source type)                                             */
 /* -------------------------------------------------------------------------- */
 
-// Each handler below is a *placeholder*. The real collectors and
-// agents land in later tasks. The contract is fixed: take the loaded
-// session, return a `ReviewHandlerResult`. Throwing is allowed and
-// is the contract for "this review cannot be processed"; `runReview`
-// will catch the throw and mark the session FAILED.
+// Each handler now does the *real* work: it delegates to
+// `runReviewPipeline` in `features/review-engine/pipeline.ts`,
+// which collects the evidence, persists it on the session,
+// runs every reviewer, and computes + persists the verdict.
+//
+// The handlers are thin because the per-source evidence
+// collectors (in `features/<source>-review/collect.ts`) own
+// the source-specific logic.
 
-/**
- * PLACEHOLDER — Public Website review.
- *
- * Future implementation: Playwright + Lighthouse + axe-core →
- * `EvidenceBundle` (with `pageContent`, `metrics`, `accessibility`
- * populated; `files` left off) → agent jury → verdict.
- */
-export const runWebsiteReview: ReviewHandler = async (session) => {
-  if (!session.target || session.target.trim().length === 0) {
-    throw new ReviewOrchestratorError(
-      `Website review ${session.id} is missing a target URL.`,
-      'INVALID_STATUS',
-    );
-  }
-  return {
-    handler: 'website',
-    status: 'completed',
-    message: 'Placeholder handler for public website review.',
-    notes: [
-      `Session: ${session.id}`,
-      `Target: ${session.target}`,
-      'Real implementation will use Playwright + Lighthouse + axe-core.',
-    ],
+const handlerFor = (kind: 'website' | 'github' | 'zip' | 'private'): ReviewHandler => {
+  return async (session) => {
+    if (!session.target || session.target.trim().length === 0) {
+      throw new ReviewOrchestratorError(
+        `${kind} review ${session.id} is missing a target.`,
+        'INVALID_STATUS',
+      );
+    }
+    const result: ReviewPipelineResult = await runReviewPipeline(session);
+    return {
+      handler: kind,
+      status: 'completed',
+      message: `Pipeline completed for ${kind} review.`,
+      notes: [
+        `Session: ${session.id}`,
+        `Target: ${session.target}`,
+        `Overall score: ${result.verdict.overallScore}/100 (${result.verdict.status}).`,
+        `Reviewers: ${result.outputs.length} (${result.pipeline.successCount} ok, ${result.pipeline.failureCount} failed).`,
+        `Priority fixes: ${result.verdict.priorityFixes.length}.`,
+      ],
+    };
   };
 };
 
 /**
- * PLACEHOLDER — GitHub repository review.
- *
- * Future implementation: GitHub REST API (metadata, tree, README,
- * languages) → `EvidenceBundle` (with `files` + `metrics` populated;
- * `pageContent` and `accessibility` left off) → agent jury →
- * verdict.
+ * Public Website review handler.
+ * Delegates to `runReviewPipeline` which calls the website
+ * evidence collector, then runs the agent jury.
  */
-export const runGithubReview: ReviewHandler = async (session) => {
-  if (!session.target || session.target.trim().length === 0) {
-    throw new ReviewOrchestratorError(
-      `GitHub review ${session.id} is missing a target repository URL.`,
-      'INVALID_STATUS',
-    );
-  }
-  return {
-    handler: 'github',
-    status: 'completed',
-    message: 'Placeholder handler for GitHub repository review.',
-    notes: [
-      `Session: ${session.id}`,
-      `Target: ${session.target}`,
-      'Real implementation will use the GitHub REST API.',
-    ],
-  };
-};
+export const runWebsiteReview: ReviewHandler = handlerFor('website');
 
 /**
- * PLACEHOLDER — ZIP upload review.
- *
- * Future implementation: extract the archive, detect frameworks,
- * walk the file tree → `EvidenceBundle` (with `files` populated;
- * `pageContent` and `accessibility` left off) → agent jury →
- * verdict.
+ * GitHub repository review handler.
+ * Delegates to `runReviewPipeline` which calls the GitHub
+ * evidence collector (REST API), then runs the agent jury.
  */
-export const runZipReview: ReviewHandler = async (session) => {
-  if (!session.target || session.target.trim().length === 0) {
-    throw new ReviewOrchestratorError(
-      `ZIP review ${session.id} is missing a target reference.`,
-      'INVALID_STATUS',
-    );
-  }
-  return {
-    handler: 'zip',
-    status: 'completed',
-    message: 'Placeholder handler for ZIP upload review.',
-    notes: [
-      `Session: ${session.id}`,
-      `Target: ${session.target}`,
-      'Real implementation will extract the archive and analyze its contents.',
-    ],
-  };
-};
+export const runGithubReview: ReviewHandler = handlerFor('github');
 
 /**
- * PLACEHOLDER — Private website review (auth-protected).
- *
- * Future implementation: authenticate with the supplied credentials,
- * then run the same pipeline as the public-website handler against
- * `EvidenceBundle` (with `pageContent`, `metrics`, `accessibility`
- * populated; `files` left off) → agent jury → verdict.
+ * ZIP archive review handler.
+ * Delegates to `runReviewPipeline` which calls the ZIP
+ * evidence collector (fetch + jszip), then runs the agent jury.
  */
-export const runPrivateWebsiteReview: ReviewHandler = async (session) => {
-  if (!session.target || session.target.trim().length === 0) {
-    throw new ReviewOrchestratorError(
-      `Private website review ${session.id} is missing a target URL.`,
-      'INVALID_STATUS',
-    );
-  }
-  return {
-    handler: 'private',
-    status: 'completed',
-    message: 'Placeholder handler for private website review.',
-    notes: [
-      `Session: ${session.id}`,
-      `Target: ${session.target}`,
-      'Real implementation will authenticate and then reuse the public-website pipeline.',
-    ],
-  };
-};
+export const runZipReview: ReviewHandler = handlerFor('zip');
+
+/**
+ * Private website review handler.
+ * Delegates to `runReviewPipeline` which calls the private
+ * website collector (HTTP Basic Auth), then runs the agent jury.
+ */
+export const runPrivateWebsiteReview: ReviewHandler = handlerFor('private');
 
 /* -------------------------------------------------------------------------- */
 /* Top-level entry                                                            */

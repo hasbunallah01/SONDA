@@ -67,3 +67,4 @@ prisma/dev.db-journal
 
 # TypeScript build info
 *.tsbuildinfo
+.env*
