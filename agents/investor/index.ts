@@ -33,7 +33,16 @@ import type {
   RubricScore,
 } from '@/agents/types';
 import { REVIEWER_ROLES } from '@/agents/types';
-import type { EvidenceBundle } from '@/types/evidence';
+import type { EvidenceBundle, ReviewSource } from '@/types/evidence';
+
+import {
+  containsBannedToken,
+  hasFiles,
+  hasPageContent,
+  hasScreenshots,
+  isCodeSource,
+  sourceLabel,
+} from '@/agents/_lib/source';
 
 /* -------------------------------------------------------------------------- */
 /* Identity                                                                   */
@@ -145,10 +154,12 @@ type Analysis = {
   priorityFixes: PriorityFix[];
   overall: number;
   confidence: number;
+  source: ReviewSource;
 };
 
 const analyze = (evidence: EvidenceBundle): Analysis => {
-  const { screenshots, pageContent, files, metrics, metadata } = evidence;
+  const { screenshots, files, metrics, metadata } = evidence;
+  const pageContent = hasPageContent(evidence) ? evidence.pageContent : undefined;
 
   const textHaystack = (
     pageContent ? `${pageContent.headings.join(' ')} ${pageContent.body}` : (files?.readme ?? '')
@@ -299,18 +310,22 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   // A clean, focused, polished surface is a soft proxy for founder fit.
   let founderFit = 50;
   const founderSignals: string[] = [];
-  if (screenshots.items.length > 0) founderFit += 10;
-  if (pageContent && pageContent.headings.length >= 2) {
+  if (hasScreenshots(evidence)) founderFit += 10;
+  if (hasPageContent(evidence) && evidence.pageContent.headings.length >= 2) {
     founderFit += 15;
     founderSignals.push('structured headings — page is organized');
   }
-  if (pageContent && pageContent.body.length > 200) {
+  if (hasPageContent(evidence) && evidence.pageContent.body.length > 200) {
     founderFit += 15;
     founderSignals.push('substantial copy — clear focus');
   }
-  if (pageContent && pageContent.links.length >= 3) {
+  if (hasPageContent(evidence) && evidence.pageContent.links.length >= 3) {
     founderFit += 10;
     founderSignals.push('multiple navigable paths — clear scope');
+  }
+  if (hasFiles(evidence) && (evidence.files.readme?.length ?? 0) >= 500) {
+    founderFit += 10;
+    founderSignals.push('README is reasonable length — clear focus');
   }
   founderFit = clamp(founderFit, 0, 100);
 
@@ -334,10 +349,10 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
 
   // --- confidence --------------------------------------------------------
   let evidencePoints = 0;
-  if (pageContent && pageContent.body.length > 0) evidencePoints += 1;
+  if (hasPageContent(evidence)) evidencePoints += 1;
   if (hasReadme) evidencePoints += 1;
   if (metrics?.stars !== undefined) evidencePoints += 1;
-  if (screenshots.items.length > 0) evidencePoints += 1;
+  if (hasScreenshots(evidence)) evidencePoints += 1;
   if (metadata.facts.title || metadata.facts.description) evidencePoints += 1;
   const confidence = evidencePoints >= 4 ? 0.85 : evidencePoints >= 2 ? 0.7 : 0.5;
 
@@ -432,14 +447,36 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     });
   }
 
+  const source = evidence.metadata.source;
+
+  // Final safety net: drop any priority fix or finding whose
+  // title or description contains a banned browser-only
+  // token. The investor reviewer's analysis is largely
+  // source-agnostic by design (it falls back to the README
+  // when page content is absent), but the banned-token
+  // filter keeps a stale website-specific recommendation
+  // from slipping into a code-source run.
+  const filteredFixes = isCodeSource(source)
+    ? priorityFixes.filter(
+        (fix) =>
+          !containsBannedToken(fix.title, source) && !containsBannedToken(fix.description, source),
+      )
+    : priorityFixes;
+  const filteredFindings = isCodeSource(source)
+    ? findings.filter(
+        (f) => !containsBannedToken(f.title, source) && !containsBannedToken(f.detail, source),
+      )
+    : findings;
+
   return {
     rubricScores,
-    findings,
+    findings: filteredFindings,
     strengths,
     weaknesses,
-    priorityFixes,
+    priorityFixes: filteredFixes,
     overall,
     confidence,
+    source,
   };
 };
 
@@ -448,7 +485,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
 /* -------------------------------------------------------------------------- */
 
 const summarize = (a: Analysis, evidence: EvidenceBundle): string => {
-  const source = evidence.metadata.source;
+  const source = sourceLabel(evidence.metadata.source);
   const target = evidence.metadata.input.label;
   const level =
     a.overall >= 85
@@ -459,7 +496,7 @@ const summarize = (a: Analysis, evidence: EvidenceBundle): string => {
           ? 'mixed'
           : 'thin';
   return (
-    `Investor review of ${source} target "${target}" is ${level} ` +
+    `Investor review of ${source} "${target}" is ${level} ` +
     `(score ${a.overall}/100, confidence ${a.confidence.toFixed(2)}). ` +
     `${a.strengths.length} strength${a.strengths.length === 1 ? '' : 's'}, ` +
     `${a.weaknesses.length} weakness${a.weaknesses.length === 1 ? '' : 'es'}, ` +

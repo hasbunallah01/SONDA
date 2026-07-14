@@ -1,14 +1,17 @@
 /**
  * agents/marketing — Marketing / GTM Expert reviewer
  *
- * Task 6.5 — Real implementation.
+ * Task 6.5 — Real implementation. Source-aware (Task 3.4).
  *
- * Decides whether the product's story, positioning, and
- * go-to-market are clear and conversion-ready. Looks at the
- * evidence bundle for the signals we can extract
- * deterministically — headline, copy density, links (CTAs,
- * social proof), screenshots (visual identity), and metadata
- * (title, description).
+ * Decides whether the product has a clear story, positioning,
+ * and go-to-market. For browser sources the reviewer uses
+ * the page headline, copy density, links (CTAs, social
+ * proof), screenshots (visual identity), and metadata
+ * (title, description). For code sources the reviewer uses
+ * the README, the project description, the project
+ * metadata, and any "Used by" / "Customers" signals in the
+ * README — and never recommends "Add a primary CTA" or
+ * "Sharpen the headline" since those do not apply.
  *
  * Like the QA and UX reviewers, the current implementation is
  * **deterministic**: it does not call an LLM. A future task can
@@ -40,7 +43,17 @@ import type {
   RubricScore,
 } from '@/agents/types';
 import { REVIEWER_ROLES } from '@/agents/types';
-import type { EvidenceBundle } from '@/types/evidence';
+import type { EvidenceBundle, ReviewSource } from '@/types/evidence';
+
+import {
+  containsBannedToken,
+  hasFiles,
+  hasMetrics,
+  hasPageContent,
+  hasScreenshots,
+  isCodeSource,
+  sourceLabel,
+} from '@/agents/_lib/source';
 
 /* -------------------------------------------------------------------------- */
 /* Identity                                                                   */
@@ -101,20 +114,6 @@ const clamp = (n: number, min: number, max: number): number => Math.max(min, Mat
 
 const round = (n: number): number => Math.round(n);
 
-/* -------------------------------------------------------------------------- */
-/* Analysis                                                                   */
-/* -------------------------------------------------------------------------- */
-
-type Analysis = {
-  rubricScores: RubricScore[];
-  findings: ReviewerFinding[];
-  strengths: string[];
-  weaknesses: string[];
-  priorityFixes: PriorityFix[];
-  overall: number;
-  confidence: number;
-};
-
 /**
  * Crude heuristic for "is this an action verb" — used to detect
  * CTAs (e.g. "Get started", "Sign up", "Try it free", "Book a demo").
@@ -170,15 +169,47 @@ const isLikelySocialProof = (text: string, href: string): boolean => {
 };
 
 /**
- * Score a single `EvidenceBundle` against the five Marketing rubric
- * axes and roll the per-axis scores up into an overall score,
- * confidence, findings, strengths, weaknesses, and priority
- * fixes.
- *
- * Pure: reads only the bundle.
+ * Crude heuristic for "is this a 'used by' / customer logo strip"
+ * in a README. Looks at headings or paragraphs.
  */
-const analyze = (evidence: EvidenceBundle): Analysis => {
-  const { screenshots, pageContent, metrics, metadata } = evidence;
+const readmeMentionsSocialProof = (readme: string): boolean => {
+  const lower = readme.toLowerCase();
+  return (
+    /\bused by\b/.test(lower) ||
+    /\btrusted by\b/.test(lower) ||
+    /\bbacked by\b/.test(lower) ||
+    /\bfeatured in\b/.test(lower) ||
+    /\bcustomers?\b/.test(lower) ||
+    /\btestimonials?\b/.test(lower) ||
+    /\bpress\b/.test(lower)
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* Analysis                                                                   */
+/* -------------------------------------------------------------------------- */
+
+type Analysis = {
+  rubricScores: RubricScore[];
+  findings: ReviewerFinding[];
+  strengths: string[];
+  weaknesses: string[];
+  priorityFixes: PriorityFix[];
+  overall: number;
+  confidence: number;
+  source: ReviewSource;
+};
+
+/**
+ * Browser-source marketing analysis. Looks at the rendered
+ * page, the metadata, and the Lighthouse SEO score to
+ * judge positioning, differentiation, conversion, copy, and
+ * audience fit. CTAs, social proof, and headline are framed
+ * for a live website.
+ */
+const analyzeBrowser = (evidence: EvidenceBundle): Analysis => {
+  const { screenshots, metrics, metadata } = evidence;
+  const pageContent = hasPageContent(evidence) ? evidence.pageContent : undefined;
 
   // --- positioning -------------------------------------------------------
   // Headline + subhead + metadata (title / description).
@@ -210,9 +241,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   positioning = clamp(positioning, 0, 100);
 
   // --- differentiation ---------------------------------------------------
-  // Differentiation is hard to detect deterministically. We look for
-  // comparison-style language ("vs", "unlike", "alternative", or for
-  // GitHub: a competitive advantage flag in metadata).
   let differentiation = 35;
   const differentiationSignals: string[] = [];
   if (pageContent) {
@@ -265,7 +293,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   } else {
     conversionSignals.push('no page content to evaluate conversion');
   }
-  if (screenshots.items.length >= 1) {
+  if (hasScreenshots(evidence)) {
     conversion += 5;
     conversionSignals.push('hero / above-the-fold visual captured');
   }
@@ -285,7 +313,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   conversion = clamp(conversion, 0, 100);
 
   // --- copy quality ------------------------------------------------------
-  // Body word count, sentence length, link density.
   let copy = 50;
   let copyNote = 'No body copy to evaluate.';
   if (pageContent && pageContent.body.length > 0) {
@@ -315,8 +342,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   copy = clamp(copy, 0, 100);
 
   // --- audience fit ------------------------------------------------------
-  // First-person language ("you", "your") and any "Built for X" or
-  // similar explicit-audience phrase.
   let audienceFit = 40;
   const audienceSignals: string[] = [];
   if (pageContent) {
@@ -354,9 +379,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   }
   audienceFit = clamp(audienceFit, 0, 100);
 
-  // Pull in Lighthouse SEO as a small bonus signal for marketing —
-  // SEO is downstream of "clear positioning" so a high score is a
-  // mild positive signal.
   if (metrics?.seo !== undefined) {
     audienceFit = clamp(Math.round((audienceFit + metrics.seo) / 2), 0, 100);
   }
@@ -381,13 +403,12 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
       audienceFit * 0.15,
   );
 
-  // --- confidence --------------------------------------------------------
   let evidencePoints = 0;
-  if (screenshots.items.length > 0) evidencePoints += 1;
-  if (pageContent && pageContent.body.length > 0) evidencePoints += 1;
-  if (pageContent && pageContent.headings.length > 0) evidencePoints += 1;
-  if (pageContent && pageContent.links.length > 0) evidencePoints += 1;
+  if (hasScreenshots(evidence)) evidencePoints += 1;
+  if (hasPageContent(evidence)) evidencePoints += 1;
   if (metadata.facts.title || metadata.facts.description) evidencePoints += 1;
+  if (pageContent && pageContent.links.length > 0) evidencePoints += 1;
+  if (hasMetrics(evidence)) evidencePoints += 1;
   const confidence = evidencePoints >= 4 ? 0.85 : evidencePoints >= 2 ? 0.7 : 0.5;
 
   // --- findings ----------------------------------------------------------
@@ -512,7 +533,382 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     priorityFixes,
     overall,
     confidence,
+    source: evidence.metadata.source,
   };
+};
+
+/**
+ * Code-source marketing analysis. Looks at the README, the
+ * project description (from `metadata.facts.description` /
+ * `metadata.input.label`), and any "Used by" / "Customers"
+ * signals in the README. Recommendations are framed for a
+ * repository (e.g. "Add a 'Used by' / customers list" rather
+ * than "Add a primary CTA").
+ */
+const analyzeCode = (evidence: EvidenceBundle): Analysis => {
+  const { metadata } = evidence;
+  const files = hasFiles(evidence) ? evidence.files : undefined;
+  const readme = files?.readme;
+  const readmeLength = readme?.length ?? 0;
+  const fileTree = files?.fileTree ?? [];
+
+  const title = metadata.facts.title;
+  const description = metadata.facts.description;
+  const label = metadata.input.label;
+
+  const haystack = `${title ?? ''} ${description ?? ''} ${readme ?? ''}`.toLowerCase();
+
+  // --- positioning -------------------------------------------------------
+  // For a repo, "positioning" = "is the project's value
+  // proposition clear from the README + the metadata
+  // (description, language, etc.)?".
+  let positioning = 30;
+  const positioningSignals: string[] = [];
+  if (description && description.length > 0) {
+    positioning += 25;
+    positioningSignals.push(`project description present ("${description.slice(0, 60)}")`);
+  } else if (title && title.length > 0) {
+    positioning += 15;
+    positioningSignals.push(
+      `project title present ("${title.slice(0, 60)}") — description is missing`,
+    );
+  } else {
+    positioningSignals.push('no project description or title in metadata');
+  }
+  if (readme && readmeLength > 0) {
+    if (readmeLength >= 1500) {
+      positioning += 30;
+      positioningSignals.push(`README is substantial (${readmeLength.toLocaleString()} chars)`);
+    } else if (readmeLength >= 500) {
+      positioning += 20;
+      positioningSignals.push(`README is reasonable (${readmeLength.toLocaleString()} chars)`);
+    } else if (readmeLength >= 200) {
+      positioning += 10;
+      positioningSignals.push(`README is short (${readmeLength.toLocaleString()} chars)`);
+    } else {
+      positioning += 5;
+      positioningSignals.push(`README is very short (${readmeLength.toLocaleString()} chars)`);
+    }
+  } else {
+    positioningSignals.push('no README in the project');
+  }
+  positioning = clamp(positioning, 0, 100);
+
+  // --- differentiation ---------------------------------------------------
+  let differentiation = 35;
+  const differentiationSignals: string[] = [];
+  const compareHits =
+    (haystack.match(/\bvs\.?\b/g)?.length ?? 0) +
+    (haystack.match(/\bversus\b/g)?.length ?? 0) +
+    (haystack.match(/\bunlike\b/g)?.length ?? 0) +
+    (haystack.match(/\balternative\b/g)?.length ?? 0) +
+    (haystack.match(/\bbetter than\b/g)?.length ?? 0) +
+    (haystack.match(/\binstead of\b/g)?.length ?? 0) +
+    (haystack.match(/\bopen[- ]source\b/g)?.length ?? 0) +
+    (haystack.match(/\bself[- ]hosted\b/g)?.length ?? 0);
+  if (compareHits >= 1) {
+    differentiation += 40;
+    differentiationSignals.push(
+      `comparison-style language detected (${compareHits} hit${compareHits === 1 ? '' : 's'})`,
+    );
+  } else {
+    differentiationSignals.push('no explicit comparison / alternative framing detected');
+  }
+  if (readme && (readme.match(/^#{1,6}\s+/gm) ?? []).length >= 3) {
+    differentiation += 15;
+    differentiationSignals.push(
+      'multiple README sections — likely articulates more than one angle',
+    );
+  }
+  differentiation = clamp(differentiation, 0, 100);
+
+  // --- conversion --------------------------------------------------------
+  // "Conversion" for a repo = "does the README give the
+  // visitor a clear next step?". A "Quick start" / "Install"
+  // section, a star / fork count, a download count, or a
+  // "Used by" section all count.
+  let conversion = 35;
+  const conversionSignals: string[] = [];
+  if (readme) {
+    const hasInstall =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/i.test(
+        readme,
+      );
+    if (hasInstall) {
+      conversion += 30;
+      conversionSignals.push('install command visible in the README');
+    } else {
+      conversionSignals.push('no install command in the README');
+    }
+    if (readmeMentionsSocialProof(readme)) {
+      conversion = clamp(conversion + 25, 0, 100);
+      conversionSignals.push('"Used by" / social-proof vocabulary in the README');
+    }
+  } else {
+    conversionSignals.push('no README to evaluate conversion');
+  }
+  // Stars are a strong demand signal for a GitHub source.
+  if (evidence.metrics?.stars !== undefined) {
+    const stars = evidence.metrics.stars;
+    if (stars >= 100) {
+      conversion = clamp(conversion + 20, 0, 100);
+      conversionSignals.push(`star count signals demand: ${stars}`);
+    } else if (stars >= 10) {
+      conversion = clamp(conversion + 10, 0, 100);
+      conversionSignals.push(`early star count: ${stars}`);
+    }
+  }
+  conversion = clamp(conversion, 0, 100);
+
+  // --- copy quality ------------------------------------------------------
+  let copy = 50;
+  let copyNote = 'No README to evaluate copy quality.';
+  if (readme && readmeLength > 0) {
+    const words = readme.split(/\s+/).filter(Boolean);
+    const wordCount = words.length;
+    if (wordCount >= 200) {
+      copy += 30;
+      copyNote = `Substantial README (${wordCount.toLocaleString()} words).`;
+    } else if (wordCount >= 60) {
+      copy += 20;
+      copyNote = `Modest README (${wordCount.toLocaleString()} words).`;
+    } else if (wordCount >= 20) {
+      copy += 10;
+      copyNote = `Short README (${wordCount.toLocaleString()} words).`;
+    } else {
+      copy += 5;
+      copyNote = `Very short README (${wordCount.toLocaleString()} words).`;
+    }
+  }
+  copy = clamp(copy, 0, 100);
+
+  // --- audience fit ------------------------------------------------------
+  let audienceFit = 40;
+  const audienceSignals: string[] = [];
+  const youCount =
+    (haystack.match(/\byou\b/g)?.length ?? 0) + (haystack.match(/\byour\b/g)?.length ?? 0);
+  if (youCount >= 2) {
+    audienceFit += 35;
+    audienceSignals.push(
+      `second-person voice detected (${youCount} hit${youCount === 1 ? '' : 's'})`,
+    );
+  } else if (youCount === 1) {
+    audienceFit += 15;
+    audienceSignals.push('one second-person reference — some audience-direct language');
+  } else {
+    audienceSignals.push('no second-person voice — copy may feel generic');
+  }
+  const audiencePhrases = [
+    'built for',
+    'designed for',
+    'for teams',
+    'for developers',
+    'for founders',
+    'for creators',
+    'for marketers',
+    'perfect for',
+    'made for',
+  ];
+  if (audiencePhrases.some((p) => haystack.includes(p))) {
+    audienceFit += 15;
+    audienceSignals.push('explicit "for X" audience phrase detected');
+  }
+  audienceFit = clamp(audienceFit, 0, 100);
+
+  const rubricScores: RubricScore[] = [
+    { rubricId: 'positioning', score: positioning, note: positioningSignals.join('; ') },
+    {
+      rubricId: 'differentiation',
+      score: differentiation,
+      note: differentiationSignals.join('; '),
+    },
+    { rubricId: 'conversion', score: conversion, note: conversionSignals.join('; ') },
+    { rubricId: 'copy', score: copy, note: copyNote },
+    { rubricId: 'audience-fit', score: audienceFit, note: audienceSignals.join('; ') },
+  ];
+
+  const overall = round(
+    positioning * 0.25 +
+      differentiation * 0.2 +
+      conversion * 0.25 +
+      copy * 0.15 +
+      audienceFit * 0.15,
+  );
+
+  let evidencePoints = 0;
+  if (readme && readmeLength > 0) evidencePoints += 1;
+  if (title || description) evidencePoints += 1;
+  if (fileTree.length > 0) evidencePoints += 1;
+  if (evidence.metrics?.stars !== undefined) evidencePoints += 1;
+  if (files?.license) evidencePoints += 1;
+  const confidence = evidencePoints >= 4 ? 0.85 : evidencePoints >= 2 ? 0.7 : 0.5;
+
+  // --- findings ----------------------------------------------------------
+  const findings: ReviewerFinding[] = [];
+  if (!description) {
+    findings.push({
+      title: 'No project description',
+      detail: `The submission "${label}" has no short description. Add a one-sentence description so the visitor knows what the project is.`,
+      category: 'positioning',
+      confidence: 0.85,
+    });
+  }
+  if (!readme || readmeLength === 0) {
+    findings.push({
+      title: 'No README',
+      detail:
+        'There is no README in the project. The visitor cannot tell what the project does or why it exists.',
+      category: 'positioning',
+      confidence: 0.95,
+    });
+  } else if (readmeLength < 200) {
+    findings.push({
+      title: 'README is very short',
+      detail: `Only ${readmeLength} characters. The visitor cannot evaluate the project from a one-paragraph README.`,
+      category: 'positioning',
+      confidence: 0.85,
+    });
+  }
+  if (readme) {
+    const hasInstall =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/i.test(
+        readme,
+      );
+    if (!hasInstall) {
+      findings.push({
+        title: 'No install command in the README',
+        detail:
+          'A developer cannot onboard from the README alone. Add a Quick start with the install command.',
+        category: 'conversion',
+        confidence: 0.85,
+      });
+    }
+    if (!readmeMentionsSocialProof(readme)) {
+      findings.push({
+        title: 'No "Used by" or trust signal',
+        detail:
+          'The README does not mention users, customers, press, or backers. A short "Used by" line is a strong demand signal for a code source.',
+        category: 'conversion',
+        confidence: 0.7,
+      });
+    }
+  }
+
+  // --- strengths + weaknesses -------------------------------------------
+  const strengths: string[] = [];
+  if (positioning >= 80)
+    strengths.push('Project description + README form a clear positioning statement.');
+  if (readme && readmeLength >= 1500) strengths.push('README is substantial.');
+  if (evidence.metrics?.stars !== undefined && evidence.metrics.stars >= 100) {
+    strengths.push(`Star count signals demand (${evidence.metrics.stars}).`);
+  }
+  if (audienceFit >= 75)
+    strengths.push('Copy is written in a second-person voice for a defined audience.');
+
+  const weaknesses: string[] = [];
+  if (positioning < 60)
+    weaknesses.push('Positioning is unclear — README / description are missing or thin.');
+  if (!readme || readmeLength === 0) weaknesses.push('No README in the project.');
+  if (readme && !readmeMentionsSocialProof(readme))
+    weaknesses.push('No "Used by" / social proof in the README.');
+  if (differentiation < 50) weaknesses.push('No explicit "vs alternative" framing detected.');
+
+  // --- priority fixes ----------------------------------------------------
+  const priorityFixes: PriorityFix[] = [];
+  if (!description) {
+    priorityFixes.push({
+      title: 'Add a one-sentence project description',
+      description: `The submission "${label}" has no short description. Add a one-sentence description in the project's metadata.`,
+      effort: 'low',
+      impact: 'high',
+    });
+  }
+  if (!readme || readmeLength === 0) {
+    priorityFixes.push({
+      title: 'Add a README',
+      description:
+        'A README is the front door of a code project. Add a one-paragraph "What it is", a "How to run" section, and a "Who is it for" line.',
+      effort: 'low',
+      impact: 'high',
+    });
+  } else if (readmeLength < 200) {
+    priorityFixes.push({
+      title: 'Expand the README',
+      description: `The README is only ${readmeLength} characters. Add a problem statement, install steps, and a usage example.`,
+      effort: 'low',
+      impact: 'high',
+    });
+  }
+  if (readme && !readmeMentionsSocialProof(readme)) {
+    priorityFixes.push({
+      title: 'Add a "Used by" / customers section to the README',
+      description:
+        'Add a short "Used by" or customers list. Even one named user is a strong demand signal for a code source.',
+      effort: 'medium',
+      impact: 'medium',
+    });
+  }
+  if (readme) {
+    const hasInstall =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/i.test(
+        readme,
+      );
+    if (!hasInstall) {
+      priorityFixes.push({
+        title: 'Add a "Quick start" section to the README',
+        description:
+          'A developer cannot onboard from the README alone. Add a Quick start section with the exact install command.',
+        effort: 'low',
+        impact: 'high',
+      });
+    }
+  }
+  if (differentiation < 50) {
+    priorityFixes.push({
+      title: 'State the differentiation explicitly',
+      description:
+        'Add a "Unlike X, we Y" or "Built for X, not for Y" line so a visitor knows why this is different from the obvious alternative.',
+      effort: 'low',
+      impact: 'medium',
+    });
+  }
+
+  return {
+    rubricScores,
+    findings,
+    strengths,
+    weaknesses,
+    priorityFixes,
+    overall,
+    confidence,
+    source: evidence.metadata.source,
+  };
+};
+
+/**
+ * Source-aware top-level entry. Branches on `metadata.source`
+ * and delegates to the browser or code analyzer. Filters
+ * `priorityFixes` through the banned-token safety net for
+ * code sources so a stale website-specific recommendation
+ * (e.g. "Add a primary call-to-action" or "Sharpen the
+ * headline") can never slip in.
+ */
+const analyze = (evidence: EvidenceBundle): Analysis => {
+  const source = evidence.metadata.source;
+  const inner = isCodeSource(source) ? analyzeCode(evidence) : analyzeBrowser(evidence);
+  if (!isCodeSource(source)) return inner;
+
+  const filteredFixes = inner.priorityFixes.filter(
+    (fix) =>
+      !containsBannedToken(fix.title, source) && !containsBannedToken(fix.description, source),
+  );
+  // Also drop any finding whose title / detail accidentally
+  // contains a banned token (e.g. "No CTA detected" mentions
+  // the word "CTA" which is a banned token for code sources).
+  const filteredFindings = inner.findings.filter(
+    (f) => !containsBannedToken(f.title, source) && !containsBannedToken(f.detail, source),
+  );
+  return { ...inner, priorityFixes: filteredFixes, findings: filteredFindings };
 };
 
 /* -------------------------------------------------------------------------- */
@@ -520,12 +916,12 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
 /* -------------------------------------------------------------------------- */
 
 const summarize = (a: Analysis, evidence: EvidenceBundle): string => {
-  const source = evidence.metadata.source;
+  const source = sourceLabel(evidence.metadata.source);
   const target = evidence.metadata.input.label;
   const level =
     a.overall >= 85 ? 'strong' : a.overall >= 70 ? 'solid' : a.overall >= 50 ? 'mixed' : 'weak';
   return (
-    `Marketing review of ${source} target "${target}" is ${level} ` +
+    `Marketing review of ${source} "${target}" is ${level} ` +
     `(score ${a.overall}/100, confidence ${a.confidence.toFixed(2)}). ` +
     `${a.strengths.length} strength${a.strengths.length === 1 ? '' : 's'}, ` +
     `${a.weaknesses.length} weakness${a.weaknesses.length === 1 ? '' : 'es'}, ` +

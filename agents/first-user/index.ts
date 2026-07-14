@@ -1,11 +1,21 @@
 /**
  * agents/first-user — First-time User reviewer
  *
- * Task 6.7 — Real implementation.
+ * Task 6.7 — Real implementation. Source-aware (Task 3.4).
  *
  * Scores the product from the cold-start, first-impression
- * perspective: in 30 seconds, can a brand-new visitor figure
- * out what this product is, who it's for, and what to do next?
+ * perspective. For browser sources, the reviewer asks: in
+ * 30 seconds, can a brand-new visitor figure out what this
+ * product is, who it's for, and what to do next? For code
+ * sources the question is the same shape, but aimed at a
+ * developer landing on a GitHub repo or a ZIP archive: can
+ * a brand-new visitor figure out what the project is, who
+ * it's for, and how to run it in 30 seconds?
+ *
+ * Recommendations for code sources are framed for a
+ * developer workflow ("Add a Quick start section to the
+ * README", "Remove jargon from the README") and never
+ * mention CTAs, hero sections, or above-the-fold copy.
  *
  * Public surface (matches `ReviewerModule` in
  * `agents/contract.ts`):
@@ -31,7 +41,16 @@ import type {
   RubricScore,
 } from '@/agents/types';
 import { REVIEWER_ROLES } from '@/agents/types';
-import type { EvidenceBundle } from '@/types/evidence';
+import type { EvidenceBundle, ReviewSource } from '@/types/evidence';
+
+import {
+  containsBannedToken,
+  hasFiles,
+  hasPageContent,
+  hasScreenshots,
+  isCodeSource,
+  sourceLabel,
+} from '@/agents/_lib/source';
 
 /* -------------------------------------------------------------------------- */
 /* Identity                                                                   */
@@ -130,10 +149,17 @@ type Analysis = {
   priorityFixes: PriorityFix[];
   overall: number;
   confidence: number;
+  source: ReviewSource;
 };
 
-const analyze = (evidence: EvidenceBundle): Analysis => {
-  const { screenshots, pageContent, metadata, logs } = evidence;
+/**
+ * Browser-source first-user analysis. Looks at the page
+ * headline, body copy, links (CTAs), trust signals, and
+ * runtime errors.
+ */
+const analyzeBrowser = (evidence: EvidenceBundle): Analysis => {
+  const { screenshots, metadata, logs } = evidence;
+  const pageContent = hasPageContent(evidence) ? evidence.pageContent : undefined;
 
   // --- purpose clarity ---------------------------------------------------
   let purpose = 25;
@@ -153,7 +179,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     purpose += 15;
     purposeSignals.push('body copy is available to explain the purpose');
   }
-  if (screenshots.items.length >= 1) {
+  if (hasScreenshots(evidence)) {
     purpose += 5;
     purposeSignals.push('visual capture available — first-paint evidence exists');
   }
@@ -225,7 +251,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   } else {
     firstActionSignals.push('no page content to evaluate first-action reachability');
   }
-  if (screenshots.items.length === 0) {
+  if (!hasScreenshots(evidence)) {
     firstAction = clamp(firstAction - 10, 0, 100);
     firstActionSignals.push('no screenshots — primary action cannot be visually verified');
   }
@@ -239,7 +265,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     trustSignals.push('meta description present');
   }
   if (pageContent) {
-    // Trust signals in the body / links.
     const linkText = pageContent.links
       .map((l) => l.text)
       .join(' ')
@@ -253,7 +278,6 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
       trustSignals.push('trust / social-proof vocabulary present');
     }
   }
-  // Runtime errors destroy first-impression trust.
   const errorCount = logs.items.filter((l) => l.level === 'error').length;
   if (errorCount > 0) {
     trust = clamp(trust - errorCount * 10, 0, 100);
@@ -262,10 +286,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
   trust = clamp(trust, 0, 100);
 
   // --- bounce risk -------------------------------------------------------
-  // Lower = more bounce risk. We compute a number and then map to the
-  // rubric score (1 - normalized_bounce_risk) so a "high bounce risk"
-  // means a low rubric score.
-  let bounceRisk = 30; // start at 30 — moderate baseline
+  let bounceRisk = 30;
   const bounceSignals: string[] = [];
   if (!firstHeading) {
     bounceRisk += 25;
@@ -279,7 +300,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     bounceRisk += 15;
     bounceSignals.push('no links — visitor has nowhere to go');
   }
-  if (screenshots.items.length === 0) {
+  if (!hasScreenshots(evidence)) {
     bounceRisk += 10;
     bounceSignals.push('no visual evidence — visitor cannot evaluate visually');
   }
@@ -287,11 +308,9 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     bounceRisk += 15;
     bounceSignals.push('runtime errors — visitor will see a broken surface');
   }
-  // Strong signals that REDUCE bounce risk.
   if (pageContent && pageContent.body.length > 200) bounceRisk -= 10;
   if (pageContent && pageContent.links.length >= 5) bounceRisk -= 10;
   bounceRisk = clamp(bounceRisk, 0, 100);
-  // Convert: high bounce risk → low rubric score.
   const bounce = clamp(100 - bounceRisk, 0, 100);
 
   const rubricScores: RubricScore[] = [
@@ -306,13 +325,12 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     purpose * 0.25 + plainLanguage * 0.15 + firstAction * 0.25 + trust * 0.15 + bounce * 0.2,
   );
 
-  // --- confidence --------------------------------------------------------
   let evidencePoints = 0;
-  if (screenshots.items.length > 0) evidencePoints += 1;
-  if (pageContent && pageContent.body.length > 0) evidencePoints += 1;
-  if (pageContent && pageContent.headings.length > 0) evidencePoints += 1;
+  if (hasScreenshots(evidence)) evidencePoints += 1;
+  if (hasPageContent(evidence)) evidencePoints += 1;
   if (metadata.facts.title || metadata.facts.description) evidencePoints += 1;
   evidencePoints += 1; // logs are always present
+  if (pageContent && pageContent.headings.length > 0) evidencePoints += 1;
   const confidence = evidencePoints >= 4 ? 0.85 : evidencePoints >= 2 ? 0.7 : 0.5;
 
   // --- findings ----------------------------------------------------------
@@ -420,7 +438,393 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
     priorityFixes,
     overall,
     confidence,
+    source: evidence.metadata.source,
   };
+};
+
+/**
+ * Code-source first-user analysis. Looks at the README, the
+ * project description, and any "Quick start" or install
+ * command. Recommendations are framed for a developer
+ * landing on a repo.
+ */
+const analyzeCode = (evidence: EvidenceBundle): Analysis => {
+  const { metadata, logs } = evidence;
+  const files = hasFiles(evidence) ? evidence.files : undefined;
+  const readme = files?.readme;
+  const readmeLength = readme?.length ?? 0;
+
+  // --- purpose clarity ---------------------------------------------------
+  let purpose = 25;
+  const purposeSignals: string[] = [];
+  if (readme && readmeLength > 0) {
+    if (readmeLength >= 1500) {
+      purpose += 50;
+      purposeSignals.push(`README is substantial (${readmeLength.toLocaleString()} chars)`);
+    } else if (readmeLength >= 500) {
+      purpose += 35;
+      purposeSignals.push(`README is reasonable (${readmeLength.toLocaleString()} chars)`);
+    } else if (readmeLength >= 200) {
+      purpose += 20;
+      purposeSignals.push(`README is short (${readmeLength.toLocaleString()} chars)`);
+    } else {
+      purpose += 10;
+      purposeSignals.push(`README is very short (${readmeLength.toLocaleString()} chars)`);
+    }
+  } else {
+    purposeSignals.push('no README — purpose is invisible');
+  }
+  if (metadata.facts.description && metadata.facts.description.length > 0) {
+    purpose += 20;
+    purposeSignals.push(
+      `project description present ("${metadata.facts.description.slice(0, 60)}")`,
+    );
+  }
+  if (metadata.facts.title && metadata.facts.title.length > 0) {
+    purpose += 5;
+    purposeSignals.push(`project title present ("${metadata.facts.title.slice(0, 60)}")`);
+  }
+  purpose = clamp(purpose, 0, 100);
+
+  // --- plain language ----------------------------------------------------
+  let plainLanguage = 70;
+  const plainSignals: string[] = [];
+  if (readme) {
+    const haystack = readme.toLowerCase();
+    const jargonHits = JARGON_WORDS.filter((j) => haystack.includes(j));
+    if (jargonHits.length === 0) {
+      plainSignals.push('no common jargon detected in the README');
+    } else {
+      plainLanguage = clamp(plainLanguage - jargonHits.length * 10, 0, 100);
+      plainSignals.push(`jargon detected: ${jargonHits.join(', ')}`);
+    }
+    if (readme.split(/\s+/).filter(Boolean).length > 0) {
+      const words = readme.split(/\s+/).filter(Boolean);
+      const avgWordLength = words.reduce((s, w) => s + w.length, 0) / words.length;
+      if (avgWordLength > 6.5) {
+        plainLanguage = clamp(plainLanguage - 10, 0, 100);
+        plainSignals.push(
+          `average word length ${avgWordLength.toFixed(1)} — README copy may be dense`,
+        );
+      }
+    }
+  } else {
+    plainSignals.push('no README to evaluate plain language');
+  }
+  plainLanguage = clamp(plainLanguage, 0, 100);
+
+  // --- first action reachable -------------------------------------------
+  // For a code source, the "primary action" is "install +
+  // run the project from the README alone". A Quick Start /
+  // install command is the equivalent of a CTA.
+  let firstAction = 25;
+  const firstActionSignals: string[] = [];
+  if (readme) {
+    const lower = readme.toLowerCase();
+    const hasInstallCmd =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/.test(
+        lower,
+      );
+    const hasQuickStart =
+      /\b(quick start|getting started|installation|install|usage|how to run|run locally)\b/.test(
+        lower,
+      );
+    if (hasInstallCmd) {
+      firstAction += 35;
+      firstActionSignals.push('install command visible in the README');
+    } else {
+      firstActionSignals.push('no install command in the README');
+    }
+    if (hasQuickStart) {
+      firstAction += 25;
+      firstActionSignals.push('Quick Start / Getting Started section present');
+    }
+    const headingCount = (readme.match(/^#{1,6}\s+/gm) ?? []).length;
+    if (headingCount >= 5) {
+      firstAction += 10;
+      firstActionSignals.push(`README has ${headingCount} headings — easy to scan`);
+    } else if (headingCount >= 2) {
+      firstAction += 5;
+      firstActionSignals.push(`README has ${headingCount} headings`);
+    }
+  } else {
+    firstActionSignals.push('no README — developer workflow is invisible');
+  }
+  if (files?.license) {
+    firstAction = clamp(firstAction + 5, 0, 100);
+    firstActionSignals.push('license present — adoption friction is lower');
+  }
+  firstAction = clamp(firstAction, 0, 100);
+
+  // --- trust -------------------------------------------------------------
+  let trust = 60;
+  const trustSignals: string[] = ['baseline trust from a clean project surface'];
+  if (metadata.facts.description) {
+    trust += 10;
+    trustSignals.push('project description present');
+  }
+  if (readme) {
+    const lower = readme.toLowerCase();
+    if (/(customers?|used by|trusted by|backed by|featured in|press|testimonials?)/.test(lower)) {
+      trust += 20;
+      trustSignals.push('trust / "used by" vocabulary present in the README');
+    }
+  }
+  if (files?.license) {
+    trust += 5;
+    trustSignals.push('license present');
+  }
+  if (evidence.metrics?.stars !== undefined) {
+    const stars = evidence.metrics.stars;
+    if (stars >= 100) {
+      trust = clamp(trust + 15, 0, 100);
+      trustSignals.push(`strong star count: ${stars}`);
+    } else if (stars >= 10) {
+      trust = clamp(trust + 8, 0, 100);
+      trustSignals.push(`early star count: ${stars}`);
+    }
+  }
+  const errorCount = logs.items.filter((l) => l.level === 'error').length;
+  if (errorCount > 0) {
+    trust = clamp(trust - errorCount * 10, 0, 100);
+    trustSignals.push(`${errorCount} collector error${errorCount === 1 ? '' : 's'} erode trust`);
+  }
+  trust = clamp(trust, 0, 100);
+
+  // --- bounce risk -------------------------------------------------------
+  let bounceRisk = 30;
+  const bounceSignals: string[] = [];
+  if (!readme || readmeLength === 0) {
+    bounceRisk += 25;
+    bounceSignals.push('no README — visitor cannot orient in 5 seconds');
+  } else if (readmeLength < 200) {
+    bounceRisk += 15;
+    bounceSignals.push('README is very short — visitor cannot evaluate the project');
+  }
+  if (!metadata.facts.description) {
+    bounceRisk += 10;
+    bounceSignals.push('no project description — visitor has no one-line summary');
+  }
+  if (!files?.license) {
+    bounceRisk += 10;
+    bounceSignals.push('no LICENSE — adoption friction is high');
+  }
+  if (errorCount > 0) {
+    bounceRisk += 15;
+    bounceSignals.push('collector errors — the analysis step did not complete cleanly');
+  }
+  if (readme && readme.split(/\s+/).filter(Boolean).length >= 200) bounceRisk -= 10;
+  if (readme && (readme.match(/^#{1,6}\s+/gm) ?? []).length >= 5) bounceRisk -= 10;
+  bounceRisk = clamp(bounceRisk, 0, 100);
+  const bounce = clamp(100 - bounceRisk, 0, 100);
+
+  const rubricScores: RubricScore[] = [
+    { rubricId: 'purpose', score: purpose, note: purposeSignals.join('; ') },
+    { rubricId: 'plain-language', score: plainLanguage, note: plainSignals.join('; ') },
+    { rubricId: 'first-action', score: firstAction, note: firstActionSignals.join('; ') },
+    { rubricId: 'trust', score: trust, note: trustSignals.join('; ') },
+    { rubricId: 'bounce-risk', score: bounce, note: bounceSignals.join('; ') },
+  ];
+
+  const overall = round(
+    purpose * 0.25 + plainLanguage * 0.15 + firstAction * 0.25 + trust * 0.15 + bounce * 0.2,
+  );
+
+  let evidencePoints = 0;
+  if (readme && readmeLength > 0) evidencePoints += 1;
+  if (metadata.facts.title || metadata.facts.description) evidencePoints += 1;
+  if (files?.license) evidencePoints += 1;
+  if (evidence.metrics?.stars !== undefined) evidencePoints += 1;
+  evidencePoints += 1; // logs are always present
+  const confidence = evidencePoints >= 4 ? 0.85 : evidencePoints >= 2 ? 0.7 : 0.5;
+
+  // --- findings ----------------------------------------------------------
+  const findings: ReviewerFinding[] = [];
+  if (!readme || readmeLength === 0) {
+    findings.push({
+      title: 'No README — the visitor cannot orient',
+      detail:
+        'There is no README in the project. A first-time developer will not know what the project is within 5 seconds and will bounce.',
+      category: 'purpose',
+      confidence: 0.95,
+    });
+  } else if (readmeLength < 200) {
+    findings.push({
+      title: 'README is very short',
+      detail: `Only ${readmeLength} characters. A first-time developer cannot evaluate the project from a one-paragraph README.`,
+      category: 'purpose',
+      confidence: 0.85,
+    });
+  }
+  if (readme) {
+    const lower = readme.toLowerCase();
+    const jargonHits = JARGON_WORDS.filter((j) => lower.includes(j));
+    if (jargonHits.length > 0) {
+      findings.push({
+        title: 'Jargon in the README',
+        detail: `Words like ${jargonHits.slice(0, 3).join(', ')} repel first-time developers. Plain language wins.`,
+        category: 'plain-language',
+        confidence: 0.8,
+      });
+    }
+  }
+  if (readme) {
+    const lower = readme.toLowerCase();
+    const hasInstallCmd =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/.test(
+        lower,
+      );
+    if (!hasInstallCmd) {
+      findings.push({
+        title: 'No install command in the README',
+        detail:
+          'A first-time developer cannot onboard from the README alone. Add a Quick start with the install command.',
+        category: 'first-action',
+        confidence: 0.9,
+      });
+    }
+  }
+  if (!files?.license) {
+    findings.push({
+      title: 'No LICENSE — adoption friction is high',
+      detail:
+        'A missing LICENSE makes the project legally ambiguous. A first-time developer may bounce rather than risk the legal question.',
+      category: 'trust',
+      confidence: 0.8,
+    });
+  }
+  if (errorCount > 0) {
+    findings.push({
+      title: 'Collector errors visible',
+      detail: `${errorCount} collector error${errorCount === 1 ? '' : 's'} detected. The analysis step did not complete cleanly.`,
+      category: 'trust',
+      confidence: 0.95,
+    });
+  }
+
+  // --- strengths + weaknesses -------------------------------------------
+  const strengths: string[] = [];
+  if (purpose >= 80) strengths.push('Purpose is obvious from the README.');
+  if (plainLanguage >= 80) strengths.push('README is in plain, non-jargon language.');
+  if (firstAction >= 80)
+    strengths.push('A first-time developer can install + run from the README alone.');
+  if (bounce >= 80) strengths.push('Bounce risk appears low.');
+
+  const weaknesses: string[] = [];
+  if (!readme || readmeLength === 0) weaknesses.push('No README — the visitor cannot orient.');
+  if (readme && readmeLength > 0 && readmeLength < 200) weaknesses.push('README is very short.');
+  if (
+    readme &&
+    !/\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/i.test(
+      readme,
+    )
+  ) {
+    weaknesses.push('No install command in the README.');
+  }
+  if (!files?.license) weaknesses.push('No LICENSE — adoption friction is high.');
+
+  // --- priority fixes ----------------------------------------------------
+  const priorityFixes: PriorityFix[] = [];
+  if (!readme || readmeLength === 0) {
+    priorityFixes.push({
+      title: 'Add a README',
+      description:
+        'A first-time developer has 5 seconds. State what the project is, who it is for, and how to run it in a short README.',
+      effort: 'low',
+      impact: 'high',
+    });
+  } else if (readmeLength < 200) {
+    priorityFixes.push({
+      title: 'Expand the README',
+      description: `The README is only ${readmeLength} characters. Add a problem statement, install steps, and a usage example.`,
+      effort: 'low',
+      impact: 'high',
+    });
+  }
+  if (readme) {
+    const lower = readme.toLowerCase();
+    const hasInstallCmd =
+      /\b(npm install|pnpm install|yarn add|pip install|cargo build|go mod|brew install|docker run)\b/.test(
+        lower,
+      );
+    if (!hasInstallCmd) {
+      priorityFixes.push({
+        title: 'Add a Quick start section to the README',
+        description:
+          'A first-time developer cannot onboard from the README alone. Add a "Quick start" with the install command and a minimal example.',
+        effort: 'low',
+        impact: 'high',
+      });
+    }
+  }
+  if (readme) {
+    const lower = readme.toLowerCase();
+    const jargonHits = JARGON_WORDS.filter((j) => lower.includes(j));
+    if (jargonHits.length > 0) {
+      priorityFixes.push({
+        title: 'Remove jargon from the README',
+        description: `Words like ${jargonHits.slice(0, 3).join(', ')} repel first-time developers. Replace with plain language.`,
+        effort: 'low',
+        impact: 'medium',
+      });
+    }
+  }
+  if (!files?.license) {
+    priorityFixes.push({
+      title: 'Add a LICENSE file',
+      description:
+        'A missing LICENSE makes the project legally ambiguous. Add a LICENSE (MIT or Apache-2.0 are common defaults).',
+      effort: 'low',
+      impact: 'medium',
+    });
+  }
+  if (errorCount > 0) {
+    priorityFixes.push({
+      title: 'Resolve collector errors',
+      description:
+        'Runtime errors are visible to the visitor and crush first-impression trust. Triage and fix.',
+      effort: 'medium',
+      impact: 'high',
+    });
+  }
+
+  const source = evidence.metadata.source;
+
+  // Final safety net: drop any priority fix or finding whose
+  // title or description contains a banned browser-only
+  // token. The code-source analysis is already framed for a
+  // repo, but the filter is the belt-and-braces guarantee.
+  const filteredFixes = isCodeSource(source)
+    ? priorityFixes.filter(
+        (fix) =>
+          !containsBannedToken(fix.title, source) && !containsBannedToken(fix.description, source),
+      )
+    : priorityFixes;
+  const filteredFindings = isCodeSource(source)
+    ? findings.filter(
+        (f) => !containsBannedToken(f.title, source) && !containsBannedToken(f.detail, source),
+      )
+    : findings;
+
+  return {
+    rubricScores,
+    findings: filteredFindings,
+    strengths,
+    weaknesses,
+    priorityFixes: filteredFixes,
+    overall,
+    confidence,
+    source,
+  };
+};
+
+/**
+ * Source-aware top-level entry. Branches on `metadata.source`
+ * and delegates to the browser or code analyzer.
+ */
+const analyze = (evidence: EvidenceBundle): Analysis => {
+  const source = evidence.metadata.source;
+  return isCodeSource(source) ? analyzeCode(evidence) : analyzeBrowser(evidence);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -428,7 +832,7 @@ const analyze = (evidence: EvidenceBundle): Analysis => {
 /* -------------------------------------------------------------------------- */
 
 const summarize = (a: Analysis, evidence: EvidenceBundle): string => {
-  const source = evidence.metadata.source;
+  const source = sourceLabel(evidence.metadata.source);
   const target = evidence.metadata.input.label;
   const level =
     a.overall >= 85
@@ -439,7 +843,7 @@ const summarize = (a: Analysis, evidence: EvidenceBundle): string => {
           ? 'mixed'
           : 'hostile';
   return (
-    `First-time-user review of ${source} target "${target}" is ${level} ` +
+    `First-time-user review of ${source} "${target}" is ${level} ` +
     `(score ${a.overall}/100, confidence ${a.confidence.toFixed(2)}). ` +
     `${a.strengths.length} strength${a.strengths.length === 1 ? '' : 's'}, ` +
     `${a.weaknesses.length} weakness${a.weaknesses.length === 1 ? '' : 'es'}, ` +
