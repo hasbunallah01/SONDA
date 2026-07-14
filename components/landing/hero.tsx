@@ -23,6 +23,7 @@
 
 import * as React from 'react';
 import Image from 'next/image';
+import Link from 'next/link';
 
 // Import Button directly (not via the components/ui barrel) so this
 // server component doesn't drag client-only primitives (Select, Checkbox,
@@ -38,9 +39,13 @@ export interface HeroProps {
   primaryCtaLabel?: string;
   /** Secondary CTA label. */
   secondaryCtaLabel?: string;
-  /** Optional click handler for the primary CTA. */
+  /** Href for the primary CTA. Defaults to "/review". */
+  primaryCtaHref?: string;
+  /** Href for the secondary CTA. Defaults to "#how-it-works" (in-page scroll). */
+  secondaryCtaHref?: string;
+  /** Optional click handler for the primary CTA. Receives the React event. */
   onPrimaryClick?: () => void;
-  /** Optional click handler for the secondary CTA. */
+  /** Optional click handler for the secondary CTA. Receives the React event. */
   onSecondaryClick?: () => void;
 }
 
@@ -53,6 +58,8 @@ const Hero: React.FC<HeroProps> = ({
   description = DEFAULT_DESCRIPTION,
   primaryCtaLabel = 'Start Investigation',
   secondaryCtaLabel = 'Learn More',
+  primaryCtaHref = '/review',
+  secondaryCtaHref = '#how-it-works',
   onPrimaryClick,
   onSecondaryClick,
 }) => {
@@ -92,24 +99,48 @@ const Hero: React.FC<HeroProps> = ({
 
         {/* CTAs */}
         <div className="mt-10 flex w-full flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-          <Button
-            className="w-full sm:w-auto"
-            size="lg"
-            type="button"
-            variant="primary"
-            onClick={onPrimaryClick}
-          >
-            {primaryCtaLabel}
-          </Button>
-          <Button
-            className="w-full sm:w-auto"
-            size="lg"
-            type="button"
-            variant="outline"
-            onClick={onSecondaryClick}
-          >
-            {secondaryCtaLabel}
-          </Button>
+          {onPrimaryClick ? (
+            <Button
+              className="w-full sm:w-auto"
+              size="lg"
+              type="button"
+              variant="primary"
+              onClick={onPrimaryClick}
+            >
+              {primaryCtaLabel}
+            </Button>
+          ) : (
+            <Button
+              aria-label={primaryCtaLabel}
+              asChild={true}
+              className="w-full sm:w-auto"
+              size="lg"
+              variant="primary"
+            >
+              <Link href={primaryCtaHref}>{primaryCtaLabel}</Link>
+            </Button>
+          )}
+          {onSecondaryClick ? (
+            <Button
+              className="w-full sm:w-auto"
+              size="lg"
+              type="button"
+              variant="outline"
+              onClick={onSecondaryClick}
+            >
+              {secondaryCtaLabel}
+            </Button>
+          ) : (
+            <Button
+              aria-label={secondaryCtaLabel}
+              asChild={true}
+              className="w-full sm:w-auto"
+              size="lg"
+              variant="outline"
+            >
+              <Link href={secondaryCtaHref}>{secondaryCtaLabel}</Link>
+            </Button>
+          )}
         </div>
       </div>
     </header>
