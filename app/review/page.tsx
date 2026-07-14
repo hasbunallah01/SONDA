@@ -108,7 +108,7 @@ const ReviewSetupPage: React.FC<ReviewSetupPageProps> = ({
             Review setup
           </p>
           <h1
-            className="mt-3 font-display text-h2 font-bold leading-tight tracking-tight sm:text-h1"
+            className="mt-3 font-sans text-h2 font-bold leading-tight tracking-tight sm:text-h1"
             id={groupLabelId}
           >
             {title}

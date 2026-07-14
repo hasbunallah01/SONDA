@@ -126,10 +126,12 @@ const Hero: React.FC<HeroProps> = ({
         className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[480px] bg-[radial-gradient(55%_60%_at_50%_0%,hsl(var(--primary)/0.06),transparent_70%)]"
       />
 
-      <div className="mx-auto flex w-full max-w-4xl flex-col items-center text-center">
-        {/* Headline */}
-        <h1 className="mt-4 font-display text-h1 font-bold leading-[1.08] tracking-tight sm:mt-8 sm:text-display">
-          Explore your product <span className="text-primary">before</span> your users do.
+      <div className="mx-auto flex w-full max-w-4xl flex-col items-start text-left sm:items-center sm:text-center">
+        {/* Headline — breaks exactly like the reference on desktop */}
+        <h1 className="mt-2 font-sans text-h1 font-bold leading-[1.1] tracking-tight sm:mt-8 sm:text-display sm:leading-[1.08]">
+          Explore your product
+          <br className="hidden sm:block" /> <span className="text-primary">before</span> your users
+          do.
         </h1>
 
         {/* Positioning line */}
@@ -146,7 +148,7 @@ const Hero: React.FC<HeroProps> = ({
           className="mt-10 w-full max-w-3xl rounded-2xl border border-border/70 bg-surface-elevated p-5 shadow-[0_1px_2px_rgba(10,14,39,0.04),0_12px_32px_-16px_rgba(10,14,39,0.12)] sm:mt-12 sm:p-7"
         >
           <h2
-            className="font-display text-body font-semibold text-text-primary sm:text-h6"
+            className="text-center font-sans text-body font-semibold text-text-primary sm:text-h6"
             id={groupLabelId}
           >
             What would you like SONDA to review?
@@ -221,7 +223,7 @@ const Hero: React.FC<HeroProps> = ({
         {/* Trust line */}
         <ul
           aria-label="Who SONDA is for"
-          className="mt-10 flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-caption text-text-muted"
+          className="mt-10 flex w-full flex-wrap items-center justify-center gap-x-3 gap-y-2 text-caption text-text-muted"
         >
           {TRUST_ITEMS.map((item, idx) => (
             <li key={item} className="inline-flex items-center gap-3">

@@ -72,7 +72,7 @@ const ScoreRing: React.FC<ScoreRingProps> = ({
       </svg>
       <div aria-hidden="true" className="absolute inset-0 flex items-center justify-center">
         <span className="flex items-baseline gap-1">
-          <span className="font-display text-5xl font-bold leading-none tracking-tight text-text-primary">
+          <span className="font-sans text-5xl font-bold leading-none tracking-tight text-text-primary">
             {clamped}
           </span>
           <span className="text-caption font-medium text-text-muted">/100</span>
@@ -129,7 +129,7 @@ const ProgressRing: React.FC<ProgressRingProps> = ({ percent, size = 64 }) => {
       </svg>
       <span
         aria-hidden="true"
-        className="absolute inset-0 flex items-center justify-center font-display text-caption font-semibold text-text-primary"
+        className="absolute inset-0 flex items-center justify-center font-sans text-caption font-semibold text-text-primary"
       >
         {clamped}%
       </span>

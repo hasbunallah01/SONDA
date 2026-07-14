@@ -190,7 +190,7 @@ const InvestigationProgress: React.FC<InvestigationProgressProps> = ({ source, t
       {/* Header — title + percent ring */}
       <div className="flex items-start justify-between gap-4">
         <div aria-live="polite">
-          <h2 className="font-display text-h3 font-bold tracking-tight text-text-primary">
+          <h2 className="font-sans text-h3 font-bold tracking-tight text-text-primary">
             Investigating your product…
           </h2>
           <p className="mt-1.5 text-caption text-text-secondary sm:text-body">

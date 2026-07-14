@@ -399,7 +399,7 @@ const ExpertReviewCard: React.FC<{ result: ReviewerResult }> = ({ result }) => {
       </div>
       <p className="mt-3 flex items-baseline gap-1">
         <span
-          className={`font-display text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
+          className={`font-sans text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
         >
           {result.score}
         </span>
@@ -447,7 +447,7 @@ const ReviewerDetailSection: React.FC<{ result: ReviewerResult }> = ({ result })
             </div>
             <div className="flex flex-col items-end">
               <span
-                className={`font-display text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
+                className={`font-sans text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
               >
                 {result.score}
                 <span className="ml-0.5 text-caption font-medium text-text-muted">/100</span>
@@ -747,7 +747,7 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
         {/* Overview / Launch verdict */}
         <section aria-label="Launch verdict" className="scroll-mt-24" id="overview">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-display text-h3 font-bold tracking-tight text-text-primary">
+            <h2 className="font-sans text-h3 font-bold tracking-tight text-text-primary">
               Launch Verdict
             </h2>
             <div className="flex items-center gap-3">
@@ -771,7 +771,7 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
               </div>
               <div className="text-center md:text-left">
                 <h3
-                  className={`font-display text-h4 font-bold leading-tight ${meta.textClass} sm:text-h3`}
+                  className={`font-sans text-h4 font-bold leading-tight ${meta.textClass} sm:text-h3`}
                 >
                   {verdict.headline}
                 </h3>
@@ -912,7 +912,7 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
           id="expert-reviews"
         >
           <h3
-            className="font-display text-h5 font-bold tracking-tight text-text-primary"
+            className="font-sans text-h5 font-bold tracking-tight text-text-primary"
             id="expert-reviews-heading"
           >
             Expert Reviews
@@ -1134,7 +1134,13 @@ const ResultsPage: React.FC<{ params: { id: string } }> = ({ params }) => {
     <main className="relative w-full bg-background px-5 py-10 text-text-primary sm:px-8 sm:py-14">
       <div className="mx-auto w-full max-w-6xl">
         <div className="mb-8 flex items-center justify-between print:hidden">
-          <Button aria-label="Back to review setup" asChild={true} size="sm" variant="ghost">
+          <Button
+            aria-label="Back to review setup"
+            asChild={true}
+            className="rounded-full"
+            size="sm"
+            variant="outline"
+          >
             <Link href="/review">
               <ArrowLeft aria-hidden="true" className="h-4 w-4" />
               <span>Back</span>

@@ -19,7 +19,6 @@
 'use client';
 
 import * as React from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowRight, Menu, X } from 'lucide-react';
@@ -76,7 +75,7 @@ const Navigation: React.FC<NavigationProps> = ({
       className="sticky top-0 z-40 w-full border-b border-border/60 bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/70"
     >
       <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-        {/* Left slot — logo (desktop) / hamburger (mobile) */}
+        {/* Left slot — hamburger (mobile only); desktop left is empty, per the reference */}
         <div className="flex items-center">
           <button
             aria-controls={panelId}
@@ -92,20 +91,6 @@ const Navigation: React.FC<NavigationProps> = ({
               <Menu aria-hidden="true" className="h-5 w-5" />
             )}
           </button>
-          <Link
-            aria-label="SONDA — go to home"
-            className="hidden items-center rounded-md outline-none md:inline-flex"
-            href={homeHref}
-          >
-            <Image
-              priority
-              alt=""
-              className="h-7 w-7"
-              height={28}
-              src="/logos/sonda-icon-128.png"
-              width={28}
-            />
-          </Link>
         </div>
 
         {/* Right slot — links + wordmark, like the reference */}

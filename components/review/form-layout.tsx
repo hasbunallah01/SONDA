@@ -41,7 +41,13 @@ const ReviewFormLayout: React.FC<ReviewFormLayoutProps> = ({
       <div className="mx-auto w-full max-w-6xl">
         {/* Back link */}
         <div className="mb-8 sm:mb-10">
-          <Button aria-label="Back to review setup" asChild={true} size="sm" variant="ghost">
+          <Button
+            aria-label="Back to review setup"
+            asChild={true}
+            className="rounded-full"
+            size="sm"
+            variant="outline"
+          >
             <Link href="/review">
               <ArrowLeft aria-hidden="true" className="h-4 w-4" />
               <span>Back</span>
@@ -53,7 +59,7 @@ const ReviewFormLayout: React.FC<ReviewFormLayoutProps> = ({
           {/* Form column */}
           <div>
             <h1
-              className="font-display text-h2 font-bold leading-[1.12] tracking-tight sm:text-h1"
+              className="font-sans text-h2 font-bold leading-[1.12] tracking-tight sm:text-h1"
               id={titleId}
             >
               {titleLead}
