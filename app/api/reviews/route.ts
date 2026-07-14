@@ -50,80 +50,19 @@
  */
 
 import { NextResponse } from 'next/server';
-import { z } from 'zod';
 
-import { prisma, ReviewType } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { isProduction } from '@/lib/env';
+import { createReviewSchema, toPrismaReviewType } from '@/lib/review-request';
 import { runReview, type RunReviewOptions } from '@/services/review-orchestrator';
 
-/* -------------------------------------------------------------------------- */
-/* Request validation                                                         */
-/* -------------------------------------------------------------------------- */
-
 /**
- * `type` is accepted in the same shape the frontend already uses
- * (lowercase, matching `types/evidence.ts#ReviewSource`). We map it to
- * the Prisma `ReviewType` enum inside the handler so the wire format
- * stays decoupled from the database schema.
+ * The pipeline (evidence collection + reviewers + verdict) runs
+ * synchronously inside this request and can take a couple of
+ * minutes. Give the function the full window so long reviews do
+ * not 504 mid-pipeline.
  */
-const reviewTypeValues = ['website', 'github', 'zip', 'private'] as const;
-
-const createReviewSchema = z.object({
-  type: z.enum(reviewTypeValues, {
-    errorMap: () => ({
-      message: `type must be one of: ${reviewTypeValues.join(', ')}`,
-    }),
-  }),
-  /**
-   * Optional credentials for `type: "private"` reviews. Forwarded
-   * to the evidence collector via the orchestrator's
-   * `RunReviewOptions.privateCredentials` field. All four fields
-   * are optional; the collector applies HTTP Basic Auth when
-   * both `username` and `password` are supplied.
-   */
-  username: z.string().min(1).max(256).optional(),
-  password: z.string().min(1).max(256).optional(),
-  twoFactorCode: z.string().min(1).max(64).optional(),
-  notes: z.string().max(2000).optional(),
-  /**
-   * `target` is whatever the user submitted:
-   *   - WEBSITE / PRIVATE_WEBSITE → URL.
-   *   - GITHUB                    → repo URL.
-   *   - ZIP                       → upload reference (placeholder for now).
-   *
-   * We only enforce a non-empty, reasonable length here. Per-source
-   * validation (URL parsing, GitHub regex, file presence) belongs in
-   * the source's own feature module, not at the API boundary.
-   */
-  target: z
-    .string({ required_error: 'target is required' })
-    .trim()
-    .min(1, 'target is required')
-    .max(2048, 'target is too long (max 2048 characters)'),
-});
-
-type CreateReviewInput = z.infer<typeof createReviewSchema>;
-
-/* -------------------------------------------------------------------------- */
-/* Mapping                                                                    */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Translate the wire-level review type into the Prisma enum. Centralized
- * here so adding a new source = one place to touch.
- */
-const toPrismaReviewType = (input: CreateReviewInput['type']): ReviewType => {
-  switch (input) {
-    case 'website':
-      return ReviewType.WEBSITE;
-    case 'github':
-      return ReviewType.GITHUB;
-    case 'zip':
-      return ReviewType.ZIP;
-    case 'private':
-      return ReviewType.PRIVATE_WEBSITE;
-  }
-};
+export const maxDuration = 300;
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
