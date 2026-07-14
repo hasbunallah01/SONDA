@@ -1,18 +1,20 @@
 /**
  * app/review/[id]/page.tsx — Review results page.
  *
- * The destination of every form submission. Loads the session
- * by id, polls the API until the verdict lands, and renders:
+ * The destination of every form submission. Loads the session by id,
+ * polls the API until the verdict lands, and renders the reference's
+ * results dashboard:
  *
- *   - The session's target, source, and current status.
- *   - The headline verdict + overall score (large, color-coded).
- *   - The per-reviewer jury (6 reviewer cards).
- *   - The top strengths, weaknesses, and priority fixes.
- *   - An evidence summary (what SONDA actually saw).
+ *   - Sticky section sidebar (Overview → per-reviewer → verdict) with a
+ *     Download Report action.
+ *   - "Launch Verdict" centerpiece: score ring + status headline.
+ *   - Top Issues + Priority Fixes side by side, strengths below.
+ *   - Expert Reviews score cards linking to full per-reviewer sections.
+ *   - Evidence summary ("What SONDA saw") + collector activity.
  *
  * States
  *   - loading  → first GET in flight.
- *   - running  → PENDING / RUNNING in DB. Spinner + auto-poll.
+ *   - running  → PENDING / RUNNING in DB. Animated investigation panel + auto-poll.
  *   - failed   → FAILED in DB. Error message + retry CTA.
  *   - missing  → 404 from the API. Link back to /review.
  *   - completed → render the verdict.
@@ -20,20 +22,12 @@
  * Polling
  *   - Every 2s while the session is in PENDING / RUNNING.
  *   - Stops on COMPLETED, FAILED, or 404.
- *   - SSR-safe: only starts polling after the initial client
- *     mount.
- *
- * Design
- *   - Reuses every primitive from `components/ui/`.
- *   - Same eyebrow / title / description header as the other
- *     review pages.
- *   - Honors the existing color tokens (success / warning / error /
- *     primary) for status badges and the verdict hero.
+ *   - SSR-safe: only starts polling after the initial client mount.
  *
  * Out of scope
  *   - Live progress streaming. Polling is good enough for the
  *     synchronous pipeline.
- *   - Re-running a single reviewer. Out of scope.
+ *   - Re-running a single reviewer.
  */
 
 'use client';
@@ -44,19 +38,24 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  Check,
   CheckCircle2,
   Clock,
+  Download,
+  FileSearch,
   FileText,
+  Gavel,
   Github,
   Globe,
   Loader2,
   Lock,
+  Megaphone,
   Package,
+  PiggyBank,
   RefreshCw,
   Search,
   ShieldCheck,
   Sparkles,
-  Wrench,
   XCircle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -64,6 +63,9 @@ import type { LucideIcon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { InvestigationProgress } from '@/components/review/investigation-progress';
+import type { InvestigationSource } from '@/components/review/investigation-progress';
+import { ScoreRing } from '@/components/review/score-ring';
 import type { EvidenceBundle } from '@/types/evidence';
 
 /* -------------------------------------------------------------------------- */
@@ -134,21 +136,61 @@ const POLL_INTERVAL_MS = 2_000;
 
 const VERDICT_META: Record<
   VerdictStatus,
-  { label: string; tone: 'success' | 'primary' | 'warning' | 'error'; icon: LucideIcon }
+  {
+    label: string;
+    tone: 'success' | 'primary' | 'warning' | 'error';
+    icon: LucideIcon;
+    textClass: string;
+    ringClass: string;
+  }
 > = {
-  ready: { label: 'Launch Ready', tone: 'success', icon: CheckCircle2 },
-  almost: { label: 'Almost There', tone: 'primary', icon: Sparkles },
-  'needs-work': { label: 'Needs Work', tone: 'warning', icon: AlertCircle },
-  'not-ready': { label: 'Not Ready', tone: 'error', icon: XCircle },
+  ready: {
+    label: 'Launch Ready',
+    tone: 'success',
+    icon: CheckCircle2,
+    textClass: 'text-success',
+    ringClass: 'text-success',
+  },
+  almost: {
+    label: 'Ready with Improvements',
+    tone: 'primary',
+    icon: Sparkles,
+    textClass: 'text-success',
+    ringClass: 'text-primary',
+  },
+  'needs-work': {
+    label: 'Needs Work',
+    tone: 'warning',
+    icon: AlertCircle,
+    textClass: 'text-warning',
+    ringClass: 'text-warning',
+  },
+  'not-ready': {
+    label: 'Not Ready',
+    tone: 'error',
+    icon: XCircle,
+    textClass: 'text-error',
+    ringClass: 'text-error',
+  },
 };
 
 const REVIEWER_ICONS: Record<ReviewerResult['reviewer'], LucideIcon> = {
-  qa: Wrench,
+  qa: Search,
   ux: Sparkles,
-  marketing: Globe,
-  investor: Search,
-  judge: Sparkles,
+  marketing: Megaphone,
+  investor: PiggyBank,
+  judge: Gavel,
   'first-user': ShieldCheck,
+};
+
+/** Short section labels used by the sidebar + review cards. */
+const REVIEWER_LABELS: Record<ReviewerResult['reviewer'], string> = {
+  qa: 'QA Review',
+  ux: 'UX Review',
+  marketing: 'Marketing Review',
+  investor: 'Investor Review',
+  judge: 'Judge Verdict',
+  'first-user': 'First User Review',
 };
 
 const SOURCE_LABELS: Record<SessionData['type'], string> = {
@@ -165,6 +207,13 @@ const SOURCE_ICONS: Record<SessionData['type'], LucideIcon> = {
   PRIVATE_WEBSITE: Lock,
 };
 
+const INVESTIGATION_SOURCE: Record<SessionData['type'], InvestigationSource> = {
+  WEBSITE: 'website',
+  GITHUB: 'github',
+  ZIP: 'zip',
+  PRIVATE_WEBSITE: 'private-website',
+};
+
 /* -------------------------------------------------------------------------- */
 /* Fetch + parse                                                              */
 /* -------------------------------------------------------------------------- */
@@ -172,11 +221,10 @@ const SOURCE_ICONS: Record<SessionData['type'], LucideIcon> = {
 /**
  * Wire shape of `GET /api/reviews/:id`.
  *
- * The backend returns the session metadata nested under
- * `session` and the evidence / reviewer results / verdict at
- * the top level. The rest of this page works with a flat
- * `SessionData`, so `fetchSession` normalizes the wire
- * shape into the flat shape before the UI touches it.
+ * The backend returns the session metadata nested under `session` and the
+ * evidence / reviewer results / verdict at the top level. The rest of this
+ * page works with a flat `SessionData`, so `fetchSession` normalizes the
+ * wire shape into the flat shape before the UI touches it.
  *
  * Keep this type in lockstep with `app/api/reviews/[id]/route.ts`.
  */
@@ -312,82 +360,182 @@ const StatusBadge: React.FC<{ status: ReviewStatus }> = ({ status }) => {
   );
 };
 
-const ScoreRing: React.FC<{ score: number; status: VerdictStatus }> = ({ score, status }) => {
-  const meta = VERDICT_META[status];
-  const ringColor =
-    meta.tone === 'success'
-      ? 'border-success/40 bg-success/5 text-success'
-      : meta.tone === 'primary'
-        ? 'border-primary/40 bg-primary-soft text-primary'
-        : meta.tone === 'warning'
-          ? 'border-warning/40 bg-warning/5 text-warning'
-          : 'border-error/40 bg-error/5 text-error';
+const impactVariant = (impact: PriorityFix['impact']): 'error' | 'warning' | 'secondary' =>
+  impact === 'high' ? 'error' : impact === 'medium' ? 'warning' : 'secondary';
+
+const impactLabel = (impact: PriorityFix['impact']): string =>
+  impact === 'high' ? 'High' : impact === 'medium' ? 'Medium' : 'Low';
+
+/** Small severity chip used in Top Issues / Priority Fixes rows. */
+const SeverityChip: React.FC<{ impact: PriorityFix['impact'] }> = ({ impact }) => (
+  <Badge aria-label={`Impact: ${impact}`} variant={impactVariant(impact)}>
+    {impactLabel(impact)}
+  </Badge>
+);
+
+const scoreToneClass = (score: number): string =>
+  score >= 85
+    ? 'text-success'
+    : score >= 70
+      ? 'text-primary'
+      : score >= 50
+        ? 'text-warning'
+        : 'text-error';
+
+/** Compact "Expert Review" score card (reference bottom row). */
+const ExpertReviewCard: React.FC<{ result: ReviewerResult }> = ({ result }) => {
+  const Icon = REVIEWER_ICONS[result.reviewer] ?? ShieldCheck;
+  const label = REVIEWER_LABELS[result.reviewer] ?? result.reviewerRole;
   return (
-    <div
-      aria-label={`Overall score ${score} out of 100, ${meta.label}`}
-      className={[
-        'inline-flex h-40 w-40 flex-col items-center justify-center rounded-full border-4',
-        ringColor,
-      ].join(' ')}
-    >
-      <span className="font-display text-5xl font-semibold leading-none">{score}</span>
-      <span className="mt-1 font-display text-caption font-medium uppercase tracking-widest text-text-secondary">
-        out of 100
-      </span>
+    <div className="flex h-full flex-col rounded-2xl border border-border bg-surface-elevated p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-caption font-semibold text-text-primary">{label}</p>
+        <span
+          aria-hidden="true"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary"
+        >
+          <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+        </span>
+      </div>
+      <p className="mt-3 flex items-baseline gap-1">
+        <span
+          className={`font-display text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
+        >
+          {result.score}
+        </span>
+        <span className="text-[12px] font-medium text-text-muted">/100</span>
+      </p>
+      {result.failed ? (
+        <p className="mt-2 inline-flex items-center gap-1 text-[12px] text-error">
+          <XCircle aria-hidden="true" className="h-3 w-3" />
+          Excluded from average
+        </p>
+      ) : null}
+      <a
+        className="mt-3 inline-flex items-center gap-1 text-caption font-medium text-primary transition-colors hover:text-primary-hover"
+        href={`#review-${result.id}`}
+      >
+        View review
+        <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+      </a>
     </div>
   );
 };
 
-const ReviewerCard: React.FC<{ result: ReviewerResult }> = ({ result }) => {
+/** Full per-reviewer section (summary, strengths, weaknesses, fixes). */
+const ReviewerDetailSection: React.FC<{ result: ReviewerResult }> = ({ result }) => {
   const Icon = REVIEWER_ICONS[result.reviewer] ?? ShieldCheck;
-  const scoreTone =
-    result.score >= 85
-      ? 'text-success'
-      : result.score >= 70
-        ? 'text-primary'
-        : result.score >= 50
-          ? 'text-warning'
-          : 'text-error';
+  const label = REVIEWER_LABELS[result.reviewer] ?? result.reviewerRole;
   return (
-    <Card className="h-full">
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary-soft text-primary"
-            >
-              <Icon className="h-4 w-4" strokeWidth={2} />
-            </span>
-            <div>
-              <CardTitle
-                as="h3"
-                className="text-caption font-semibold uppercase tracking-widest text-text-muted"
+    <section aria-label={label} className="scroll-mt-24" id={`review-${result.id}`}>
+      <Card noHover={true}>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span
+                aria-hidden="true"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary-soft text-primary"
               >
-                {result.reviewerRole}
-              </CardTitle>
+                <Icon className="h-5 w-5" strokeWidth={2} />
+              </span>
+              <div>
+                <CardTitle as="h3" className="text-h5">
+                  {label}
+                </CardTitle>
+                <p className="mt-0.5 text-caption text-text-muted">{result.reviewerRole}</p>
+              </div>
+            </div>
+            <div className="flex flex-col items-end">
+              <span
+                className={`font-display text-h3 font-bold leading-none ${scoreToneClass(result.score)}`}
+              >
+                {result.score}
+                <span className="ml-0.5 text-caption font-medium text-text-muted">/100</span>
+              </span>
+              <span className="mt-1 font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                conf {result.confidence.toFixed(2)}
+              </span>
             </div>
           </div>
-          <div className="flex flex-col items-end">
-            <span className={`font-display text-h3 font-semibold leading-none ${scoreTone}`}>
-              {result.score}
-            </span>
-            <span className="mt-1 font-mono text-[10px] uppercase tracking-widest text-text-muted">
-              conf {result.confidence.toFixed(2)}
-            </span>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="text-caption leading-relaxed text-text-secondary">{result.summary}</p>
-        {result.failed ? (
-          <p className="mt-3 inline-flex items-center gap-1.5 text-caption text-error">
-            <XCircle aria-hidden="true" className="h-3.5 w-3.5" />
-            This reviewer failed; its score is excluded from the average.
+        </CardHeader>
+        <CardContent>
+          <p className="text-caption leading-relaxed text-text-secondary sm:text-body">
+            {result.summary}
           </p>
-        ) : null}
-      </CardContent>
-    </Card>
+          {result.failed ? (
+            <p className="mt-3 inline-flex items-center gap-1.5 text-caption text-error">
+              <XCircle aria-hidden="true" className="h-3.5 w-3.5" />
+              This reviewer failed; its score is excluded from the average.
+            </p>
+          ) : null}
+
+          {result.strengths.length > 0 || result.weaknesses.length > 0 ? (
+            <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {result.strengths.length > 0 ? (
+                <div>
+                  <h4 className="text-caption font-semibold text-text-primary">Strengths</h4>
+                  <ul className="mt-2 flex flex-col gap-1.5">
+                    {result.strengths.map((line, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start gap-2 text-caption leading-relaxed text-text-secondary"
+                      >
+                        <Check
+                          aria-hidden="true"
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success"
+                        />
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {result.weaknesses.length > 0 ? (
+                <div>
+                  <h4 className="text-caption font-semibold text-text-primary">Weaknesses</h4>
+                  <ul className="mt-2 flex flex-col gap-1.5">
+                    {result.weaknesses.map((line, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start gap-2 text-caption leading-relaxed text-text-secondary"
+                      >
+                        <XCircle
+                          aria-hidden="true"
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error"
+                        />
+                        <span>{line}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {result.priorityFixes.length > 0 ? (
+            <div className="mt-5">
+              <h4 className="text-caption font-semibold text-text-primary">Suggested fixes</h4>
+              <ul className="mt-2 flex flex-col gap-2">
+                {result.priorityFixes.map((fix, idx) => (
+                  <li
+                    key={`${idx}-${fix.title}`}
+                    className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-surface px-3.5 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-caption font-medium text-text-primary">{fix.title}</p>
+                      <p className="mt-0.5 text-caption leading-snug text-text-muted">
+                        {fix.description}
+                      </p>
+                    </div>
+                    <SeverityChip impact={fix.impact} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+    </section>
   );
 };
 
@@ -443,21 +591,31 @@ const EvidenceSummaryCard: React.FC<{ evidence: EvidenceSummary }> = ({ evidence
   return (
     <Card noHover={true}>
       <CardHeader>
-        <CardTitle as="h2" className="text-h5">
-          What SONDA saw
-        </CardTitle>
-        <CardDescription className="text-caption text-text-secondary">
-          The evidence bundle that fed the jury.
-        </CardDescription>
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-primary-soft text-primary"
+          >
+            <FileSearch className="h-4 w-4" strokeWidth={2} />
+          </span>
+          <div>
+            <CardTitle as="h2" className="text-h5">
+              What SONDA saw
+            </CardTitle>
+            <CardDescription className="text-caption text-text-secondary">
+              The evidence bundle that fed the jury.
+            </CardDescription>
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {items.map((item) => (
             <div
               key={item.label}
-              className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2"
+              className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-surface px-3.5 py-2.5"
             >
-              <dt className="font-display text-caption font-semibold uppercase tracking-widest text-text-muted">
+              <dt className="text-[12px] font-semibold uppercase tracking-widest text-text-muted">
                 {item.label}
               </dt>
               <dd className="truncate text-caption text-text-primary">{item.value}</dd>
@@ -466,14 +624,14 @@ const EvidenceSummaryCard: React.FC<{ evidence: EvidenceSummary }> = ({ evidence
         </dl>
         {evidence.logs.items.length > 0 ? (
           <details className="mt-4">
-            <summary className="cursor-pointer text-caption font-medium text-text-secondary hover:text-text-primary">
+            <summary className="cursor-pointer text-caption font-medium text-text-secondary transition-colors hover:text-text-primary">
               Collector activity ({evidence.logs.items.length} log entries)
             </summary>
             <ul className="mt-3 space-y-1">
               {evidence.logs.items.slice(0, 6).map((log, idx) => (
                 <li
                   key={`${idx}-${log.message}`}
-                  className="rounded-md border border-border/40 bg-background/30 px-3 py-2 text-caption text-text-muted"
+                  className="rounded-xl border border-border/40 bg-surface px-3.5 py-2.5 text-caption text-text-muted"
                 >
                   <span className="mr-2 font-mono uppercase tracking-widest text-text-secondary">
                     {log.level}
@@ -504,68 +662,17 @@ const LoadingView: React.FC = () => (
   </div>
 );
 
-const RunningView: React.FC<{ session: SessionData }> = ({ session }) => {
-  const SourceIcon = SOURCE_ICONS[session.type];
-  return (
-    <div className="flex flex-col gap-8">
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-primary-soft text-primary"
-              >
-                <SourceIcon className="h-5 w-5" strokeWidth={2} />
-              </span>
-              <div>
-                <CardTitle as="h2" className="text-h4">
-                  {SOURCE_LABELS[session.type]}
-                </CardTitle>
-                <p className="mt-1 break-all font-mono text-caption text-text-secondary">
-                  {session.target}
-                </p>
-              </div>
-            </div>
-            <StatusBadge status={session.status} />
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-center gap-4 py-6" role="status">
-            <Loader2 aria-hidden="true" className="h-8 w-8 animate-spin text-primary" />
-            <p className="font-display text-h4 font-semibold text-text-primary">
-              The jury is investigating
-            </p>
-            <p className="max-w-md text-center text-caption leading-relaxed text-text-secondary">
-              SONDA is collecting evidence and running the reviewer panel. This page will update
-              automatically when the verdict is ready — no need to refresh.
-            </p>
-          </div>
-          <ul aria-label="Pipeline stages" className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <li className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2 text-caption text-text-secondary">
-              <span aria-hidden="true" className="h-2 w-2 rounded-full bg-primary" />
-              Collecting evidence
-            </li>
-            <li className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2 text-caption text-text-secondary">
-              <span aria-hidden="true" className="h-2 w-2 rounded-full bg-primary" />
-              Running the jury
-            </li>
-            <li className="flex items-center gap-2 rounded-md border border-border/60 bg-background/40 px-3 py-2 text-caption text-text-secondary">
-              <span aria-hidden="true" className="h-2 w-2 rounded-full bg-primary" />
-              Computing the verdict
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
-    </div>
-  );
-};
+const RunningView: React.FC<{ session: SessionData }> = ({ session }) => (
+  <div className="mx-auto w-full max-w-3xl">
+    <InvestigationProgress source={INVESTIGATION_SOURCE[session.type]} target={session.target} />
+  </div>
+);
 
 const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
   const verdict = session.verdict;
   if (!verdict) {
     return (
-      <Card>
+      <Card noHover={true}>
         <CardContent>
           <p className="text-body text-text-secondary">
             SONDA completed this review but the verdict is missing. Please refresh.
@@ -575,100 +682,220 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
     );
   }
   const meta = VERDICT_META[verdict.status];
-  const MetaIcon = meta.icon;
   const SourceIcon = SOURCE_ICONS[session.type];
 
+  const sidebarItems: { id: string; label: string; icon: LucideIcon }[] = [
+    { id: 'overview', label: 'Overview', icon: FileText },
+    ...session.reviewerResults.map((r) => ({
+      id: `review-${r.id}`,
+      label: REVIEWER_LABELS[r.reviewer] ?? r.reviewerRole,
+      icon: REVIEWER_ICONS[r.reviewer] ?? ShieldCheck,
+    })),
+  ];
+
+  const handleDownload = (): void => {
+    if (typeof window !== 'undefined') window.print();
+  };
+
   return (
-    <div className="flex flex-col gap-8">
-      {/* Hero */}
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-primary-soft text-primary"
-              >
-                <SourceIcon className="h-5 w-5" strokeWidth={2} />
+    <div className="grid grid-cols-1 gap-10 lg:grid-cols-[13.5rem_minmax(0,1fr)]">
+      {/* Sidebar — desktop only */}
+      <aside className="hidden lg:block print:hidden">
+        <nav
+          aria-label="Report sections"
+          className="sticky top-24 flex flex-col rounded-2xl border border-border/70 bg-surface-elevated p-2 shadow-sm"
+        >
+          <ul className="flex flex-col gap-0.5">
+            {sidebarItems.map((item, idx) => {
+              const Icon = item.icon;
+              return (
+                <li key={item.id}>
+                  <a
+                    className={[
+                      'flex items-center gap-2.5 rounded-xl px-3 py-2 text-caption font-medium transition-colors',
+                      idx === 0
+                        ? 'bg-primary-soft text-primary'
+                        : 'text-text-secondary hover:bg-muted hover:text-text-primary',
+                    ].join(' ')}
+                    href={`#${item.id}`}
+                  >
+                    <Icon aria-hidden="true" className="h-4 w-4" />
+                    {item.label}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-2 border-t border-border/60 pt-2">
+            <button
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-caption font-medium text-text-secondary transition-colors hover:bg-muted hover:text-text-primary"
+              type="button"
+              onClick={handleDownload}
+            >
+              <Download aria-hidden="true" className="h-4 w-4" />
+              <span>
+                Download Report
+                <span className="block text-[11px] font-normal text-text-muted">PDF</span>
               </span>
-              <div>
-                <CardTitle as="h2" className="text-h4">
-                  {SOURCE_LABELS[session.type]}
-                </CardTitle>
-                <p className="mt-1 break-all font-mono text-caption text-text-secondary">
-                  {session.target}
+            </button>
+          </div>
+        </nav>
+      </aside>
+
+      {/* Main column */}
+      <div className="flex min-w-0 flex-col gap-8">
+        {/* Overview / Launch verdict */}
+        <section aria-label="Launch verdict" className="scroll-mt-24" id="overview">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-display text-h3 font-bold tracking-tight text-text-primary">
+              Launch Verdict
+            </h2>
+            <div className="flex items-center gap-3">
+              <span className="hidden items-center gap-2 text-caption text-text-muted sm:inline-flex">
+                <SourceIcon aria-hidden="true" className="h-3.5 w-3.5" />
+                {SOURCE_LABELS[session.type]}
+              </span>
+              <StatusBadge status={session.status} />
+            </div>
+          </div>
+          <p className="mt-1 break-all font-mono text-caption text-text-muted">{session.target}</p>
+
+          <div className="mt-6 rounded-2xl border border-border/70 bg-surface-elevated p-6 shadow-sm sm:p-8">
+            <div className="grid grid-cols-1 items-center gap-8 md:grid-cols-[auto_minmax(0,1fr)] lg:grid-cols-[auto_minmax(0,1fr)_auto]">
+              <div className="justify-self-center md:justify-self-start">
+                <ScoreRing
+                  label={`Overall score ${verdict.overallScore} out of 100, ${meta.label}`}
+                  score={verdict.overallScore}
+                  toneClass={meta.ringClass}
+                />
+              </div>
+              <div className="text-center md:text-left">
+                <h3
+                  className={`font-display text-h4 font-bold leading-tight ${meta.textClass} sm:text-h3`}
+                >
+                  {verdict.headline}
+                </h3>
+                <p className="mt-2 max-w-xl text-caption leading-relaxed text-text-secondary sm:text-body">
+                  {verdict.summary}
                 </p>
               </div>
-            </div>
-            <StatusBadge status={session.status} />
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-center gap-6 py-4">
-            <ScoreRing score={verdict.overallScore} status={verdict.status} />
-            <div className="flex flex-col items-center gap-2 text-center">
-              <Badge dot aria-label={`Verdict: ${meta.label}`} variant={meta.tone}>
-                <MetaIcon aria-hidden="true" className="h-3.5 w-3.5" />
-                {meta.label}
-              </Badge>
-              <h3 className="mt-1 font-display text-h3 font-semibold leading-tight text-text-primary sm:text-h2">
-                {verdict.headline}
-              </h3>
-              <p className="max-w-2xl text-body leading-relaxed text-text-secondary">
-                {verdict.summary}
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Reviewer panel */}
-      <section aria-labelledby="jury-heading">
-        <h2
-          className="font-display text-caption font-semibold uppercase tracking-widest text-text-muted"
-          id="jury-heading"
-        >
-          The jury
-        </h2>
-        <p className="mt-1 font-display text-h4 font-semibold text-text-primary">
-          {session.reviewerResults.length} reviewers, one verdict
-        </p>
-        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {session.reviewerResults.map((r) => (
-            <ReviewerCard key={r.id} result={r} />
-          ))}
-        </div>
-      </section>
-
-      {/* Strengths + Weaknesses */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-3">
-              <span
+              {/* Decorative product panel (reference thumbnail) */}
+              <div
                 aria-hidden="true"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-success/10 text-success"
+                className="hidden w-52 shrink-0 self-center overflow-hidden rounded-xl border border-border/60 bg-secondary p-4 shadow-inner lg:block"
               >
-                <CheckCircle2 className="h-4 w-4" strokeWidth={2} />
-              </span>
-              <CardTitle as="h2" className="text-h5">
-                Top strengths
-              </CardTitle>
+                <p className="truncate font-display text-caption font-semibold text-white/90">
+                  {session.target.replace(/^https?:\/\//i, '')}
+                </p>
+                <div className="mt-3 space-y-2">
+                  <div className="h-2 w-3/4 rounded-full bg-white/15" />
+                  <div className="h-2 w-1/2 rounded-full bg-white/10" />
+                  <div className="h-2 w-2/3 rounded-full bg-white/10" />
+                </div>
+                <div className="mt-4 inline-flex rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white">
+                  Reviewed by SONDA
+                </div>
+              </div>
             </div>
+          </div>
+        </section>
+
+        {/* Top issues + priority fixes */}
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <Card noHover={true}>
+            <CardHeader>
+              <CardTitle as="h3" className="text-h6">
+                Top Issues
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {verdict.topWeaknesses.length > 0 ? (
+                <ol aria-label="Top issues" className="flex flex-col gap-2.5">
+                  {verdict.topWeaknesses.map((line, idx) => (
+                    <li key={idx} className="flex items-start gap-3">
+                      <span
+                        aria-hidden="true"
+                        className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted font-mono text-[11px] font-semibold text-text-secondary"
+                      >
+                        {idx + 1}
+                      </span>
+                      <span className="text-caption leading-relaxed text-text-primary">{line}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-caption text-text-muted">No issues were flagged.</p>
+              )}
+              <a
+                className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-caption font-medium text-text-secondary transition-colors hover:border-primary/40 hover:text-text-primary"
+                href="#expert-reviews"
+              >
+                View all issues
+                <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+              </a>
+            </CardContent>
+          </Card>
+
+          <Card noHover={true}>
+            <CardHeader>
+              <CardTitle as="h3" className="text-h6">
+                Priority Fixes
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {verdict.priorityFixes.length > 0 ? (
+                <ul aria-label="Priority fixes" className="flex flex-col gap-2.5">
+                  {verdict.priorityFixes.map((fix, idx) => (
+                    <li key={`${idx}-${fix.title}`} className="flex items-start gap-3">
+                      <Check aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                      <div className="flex min-w-0 flex-1 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-caption font-medium leading-relaxed text-text-primary">
+                            {fix.title}
+                          </p>
+                          <p className="mt-0.5 text-caption leading-snug text-text-muted">
+                            {fix.description}{' '}
+                            <span className="whitespace-nowrap text-[12px]">
+                              · Effort: {fix.effort}
+                            </span>
+                          </p>
+                        </div>
+                        <SeverityChip impact={fix.impact} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-caption text-text-muted">No priority fixes were suggested.</p>
+              )}
+              <a
+                className="mt-5 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-caption font-medium text-text-secondary transition-colors hover:border-primary/40 hover:text-text-primary"
+                href="#expert-reviews"
+              >
+                View all fixes
+                <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+              </a>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Top strengths */}
+        <Card noHover={true}>
+          <CardHeader>
+            <CardTitle as="h3" className="text-h6">
+              Top Strengths
+            </CardTitle>
           </CardHeader>
           <CardContent>
             {verdict.topStrengths.length > 0 ? (
-              <ul aria-label="Top strengths" className="flex flex-col gap-2">
+              <ul aria-label="Top strengths" className="flex flex-col gap-2.5">
                 {verdict.topStrengths.map((line, idx) => (
-                  <li
-                    key={idx}
-                    className="flex items-start gap-2 rounded-md border border-success/20 bg-success/5 px-3 py-2 text-caption leading-relaxed text-text-primary"
-                  >
+                  <li key={idx} className="flex items-start gap-3">
                     <CheckCircle2
                       aria-hidden="true"
-                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success"
+                      className="mt-0.5 h-4 w-4 shrink-0 text-success"
                     />
-                    <span>{line}</span>
+                    <span className="text-caption leading-relaxed text-text-primary">{line}</span>
                   </li>
                 ))}
               </ul>
@@ -678,127 +905,53 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-3">
-              <span
-                aria-hidden="true"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-error/10 text-error"
-              >
-                <XCircle className="h-4 w-4" strokeWidth={2} />
-              </span>
-              <CardTitle as="h2" className="text-h5">
-                Top weaknesses
-              </CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {verdict.topWeaknesses.length > 0 ? (
-              <ul aria-label="Top weaknesses" className="flex flex-col gap-2">
-                {verdict.topWeaknesses.map((line, idx) => (
-                  <li
-                    key={idx}
-                    className="flex items-start gap-2 rounded-md border border-error/20 bg-error/5 px-3 py-2 text-caption leading-relaxed text-text-primary"
-                  >
-                    <XCircle
-                      aria-hidden="true"
-                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-error"
-                    />
-                    <span>{line}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-caption text-text-muted">No weaknesses were flagged.</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Priority fixes */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span
-              aria-hidden="true"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary-soft text-primary"
-            >
-              <Wrench className="h-4 w-4" strokeWidth={2} />
-            </span>
-            <CardTitle as="h2" className="text-h5">
-              Priority fixes
-            </CardTitle>
+        {/* Expert reviews */}
+        <section
+          aria-labelledby="expert-reviews-heading"
+          className="scroll-mt-24"
+          id="expert-reviews"
+        >
+          <h3
+            className="font-display text-h5 font-bold tracking-tight text-text-primary"
+            id="expert-reviews-heading"
+          >
+            Expert Reviews
+          </h3>
+          <p className="mt-1 text-caption text-text-muted">
+            {session.reviewerResults.length} reviewers, one verdict.
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+            {session.reviewerResults.map((r) => (
+              <ExpertReviewCard key={r.id} result={r} />
+            ))}
           </div>
-          <CardDescription className="text-caption text-text-secondary">
-            Ranked by impact and effort, deduplicated across the jury.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {verdict.priorityFixes.length > 0 ? (
-            <ol aria-label="Priority fixes" className="flex flex-col gap-3">
-              {verdict.priorityFixes.map((fix, idx) => {
-                const impactTone =
-                  fix.impact === 'high'
-                    ? 'error'
-                    : fix.impact === 'medium'
-                      ? 'warning'
-                      : 'secondary';
-                const effortTone =
-                  fix.effort === 'low'
-                    ? 'success'
-                    : fix.effort === 'medium'
-                      ? 'warning'
-                      : 'secondary';
-                return (
-                  <li
-                    key={`${idx}-${fix.title}`}
-                    className="flex items-start gap-3 rounded-md border border-border/60 bg-background/40 p-4"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary-soft font-mono text-caption font-semibold text-primary"
-                    >
-                      {idx + 1}
-                    </span>
-                    <div className="flex min-w-0 flex-col">
-                      <p className="font-display text-body font-semibold text-text-primary">
-                        {fix.title}
-                      </p>
-                      <p className="mt-1 text-caption leading-relaxed text-text-secondary">
-                        {fix.description}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <Badge aria-label={`Impact: ${fix.impact}`} variant={impactTone}>
-                          Impact · {fix.impact}
-                        </Badge>
-                        <Badge aria-label={`Effort: ${fix.effort}`} variant={effortTone}>
-                          Effort · {fix.effort}
-                        </Badge>
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
-          ) : (
-            <p className="text-caption text-text-muted">No priority fixes were suggested.</p>
-          )}
-        </CardContent>
-      </Card>
+        </section>
 
-      {/* Evidence summary */}
-      {session.evidence ? <EvidenceSummaryCard evidence={session.evidence} /> : null}
+        {/* Per-reviewer detail sections */}
+        <div className="flex flex-col gap-6">
+          {session.reviewerResults.map((r) => (
+            <ReviewerDetailSection key={r.id} result={r} />
+          ))}
+        </div>
 
-      {/* CTA */}
-      <div className="flex flex-col items-center gap-3 pt-2 text-center">
-        <Button asChild={true} size="lg" variant="primary">
-          <Link href="/review">
-            Start another review
-            <ArrowRight aria-hidden="true" className="h-4 w-4" />
-          </Link>
-        </Button>
-        <p className="text-caption text-text-muted">
-          Share this URL with your team — the result is durable.
+        {/* Evidence summary */}
+        {session.evidence ? <EvidenceSummaryCard evidence={session.evidence} /> : null}
+
+        {/* CTA */}
+        <div className="flex flex-col items-center gap-3 pt-2 text-center print:hidden">
+          <Button asChild={true} size="lg" variant="primary">
+            <Link href="/review">
+              Start another review
+              <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            </Link>
+          </Button>
+          <p className="text-caption text-text-muted">
+            Share this URL with your team — the result is durable.
+          </p>
+        </div>
+
+        <p className="border-t border-border/60 pt-6 text-center text-caption text-text-muted">
+          © {new Date().getFullYear()} SONDA. All rights reserved.
         </p>
       </div>
     </div>
@@ -806,13 +959,13 @@ const CompletedView: React.FC<{ session: SessionData }> = ({ session }) => {
 };
 
 const FailedView: React.FC<{ session: SessionData; reason: string }> = ({ session, reason }) => (
-  <Card>
+  <Card noHover={true}>
     <CardHeader>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span
             aria-hidden="true"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-error/10 text-error"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-error/10 text-error"
           >
             <XCircle className="h-5 w-5" strokeWidth={2} />
           </span>
@@ -828,7 +981,7 @@ const FailedView: React.FC<{ session: SessionData; reason: string }> = ({ sessio
         SONDA could not complete the review of{' '}
         <span className="break-all font-mono">{session.target}</span>.
       </p>
-      <p className="mt-3 rounded-md border border-error/20 bg-error/5 p-3 font-mono text-caption leading-relaxed text-text-primary">
+      <p className="mt-3 rounded-xl border border-error/20 bg-error/5 p-3 font-mono text-caption leading-relaxed text-text-primary">
         {reason}
       </p>
       <div className="mt-6 flex flex-wrap gap-3">
@@ -847,12 +1000,12 @@ const FailedView: React.FC<{ session: SessionData; reason: string }> = ({ sessio
 );
 
 const MissingView: React.FC = () => (
-  <Card>
+  <Card noHover={true}>
     <CardHeader>
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-warning/10 text-warning"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-warning/10 text-warning"
         >
           <FileText className="h-5 w-5" strokeWidth={2} />
         </span>
@@ -876,12 +1029,12 @@ const MissingView: React.FC = () => (
 );
 
 const ErrorView: React.FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => (
-  <Card>
+  <Card noHover={true}>
     <CardHeader>
       <div className="flex items-center gap-3">
         <span
           aria-hidden="true"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-error/10 text-error"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-error/10 text-error"
         >
           <AlertCircle className="h-5 w-5" strokeWidth={2} />
         </span>
@@ -978,13 +1131,13 @@ const ResultsPage: React.FC<{ params: { id: string } }> = ({ params }) => {
   }, [state.kind, state]);
 
   return (
-    <main className="relative w-full bg-background px-6 py-20 text-text-primary sm:py-24">
-      <div className="mx-auto w-full max-w-4xl">
-        <div className="mb-8 flex items-center justify-between">
+    <main className="relative w-full bg-background px-5 py-10 text-text-primary sm:px-8 sm:py-14">
+      <div className="mx-auto w-full max-w-6xl">
+        <div className="mb-8 flex items-center justify-between print:hidden">
           <Button aria-label="Back to review setup" asChild={true} size="sm" variant="ghost">
             <Link href="/review">
               <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-              <span>Back to review setup</span>
+              <span>Back</span>
             </Link>
           </Button>
           {state.kind === 'running' ? (
