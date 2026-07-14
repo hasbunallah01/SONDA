@@ -19,6 +19,7 @@
 'use client';
 
 import * as React from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowRight, Menu, X } from 'lucide-react';
@@ -111,10 +112,25 @@ const Navigation: React.FC<NavigationProps> = ({
           </ul>
           <Link
             aria-label="SONDA — go to home"
-            className="rounded-md font-display text-body font-bold uppercase tracking-[0.28em] text-text-primary outline-none"
+            className="group inline-flex items-center gap-2 rounded-md outline-none"
             href={homeHref}
           >
-            SONDA
+            <Image
+              priority
+              alt=""
+              className="h-6 w-6 transition-transform duration-300 group-hover:rotate-[20deg] sm:h-7 sm:w-7"
+              height={28}
+              src="/logos/sonda-icon-transparent-64.png"
+              width={28}
+            />
+            <span className="inline-flex items-baseline font-sans text-body font-bold uppercase tracking-[0.28em] text-text-primary">
+              SONDA
+              {/* Blue dot accent from the wordmark's "A" */}
+              <span
+                aria-hidden="true"
+                className="ml-1 inline-block h-1.5 w-1.5 -translate-x-[0.14em] rounded-full bg-[#20a8e8]"
+              />
+            </span>
           </Link>
         </div>
       </div>
