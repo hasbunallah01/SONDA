@@ -34,6 +34,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
 import { Globe, Github, FolderArchive, Lock, ArrowRight } from 'lucide-react';
 
@@ -187,10 +188,10 @@ const ReviewSetupPage: React.FC<ReviewSetupPageProps> = ({
                         variant={isAvailable ? 'primary' : 'outline'}
                       >
                         {isAvailable ? (
-                          <a href={type.href}>
+                          <Link href={type.href}>
                             Select
                             <ArrowRight aria-hidden="true" className="h-4 w-4" />
-                          </a>
+                          </Link>
                         ) : (
                           <span>Coming soon</span>
                         )}

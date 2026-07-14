@@ -54,9 +54,9 @@ const DEFAULT_LINKS: FooterLink[] = [
   },
   {
     label: 'Documentation',
-    href: '/docs',
+    href: 'https://github.com/hasbunallah01/SONDA#readme',
     icon: BookText,
-    external: false,
+    external: true,
   },
   {
     label: 'Contact',

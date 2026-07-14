@@ -769,19 +769,11 @@ const FailedView: React.FC<{ session: SessionData; reason: string }> = ({ sessio
         <Button asChild={true} size="md" variant="primary">
           <Link href="/review">Start a different review</Link>
         </Button>
-        <Button
-          aria-label="Retry the same review"
-          asChild={false}
-          size="md"
-          variant="outline"
-          // Trigger a refresh in the parent via window.location; we don't
-          // get a retry callback here because this view is rendered
-          // directly.
-        >
-          <a href={`/review/${session.id}`}>
+        <Button aria-label="Retry the same review" asChild={true} size="md" variant="outline">
+          <Link href={`/review/${session.id}`}>
             <RefreshCw aria-hidden="true" className="h-4 w-4" />
             Retry this review
-          </a>
+          </Link>
         </Button>
       </div>
     </CardContent>

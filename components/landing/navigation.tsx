@@ -32,7 +32,9 @@ import { Button } from '@/components/ui/button';
 export interface NavigationProps {
   /** Optional override for the primary CTA label. */
   ctaLabel?: string;
-  /** Optional click handler for the primary CTA. */
+  /** Href for the primary CTA. Defaults to "/review". */
+  ctaHref?: string;
+  /** Optional click handler for the primary CTA. Receives the React event. */
   onCtaClick?: () => void;
   /** Href for the brand anchor. Defaults to "/". */
   homeHref?: string;
@@ -42,6 +44,7 @@ const DEFAULT_CTA = 'Start Investigation';
 
 const Navigation: React.FC<NavigationProps> = ({
   ctaLabel = DEFAULT_CTA,
+  ctaHref = '/review',
   onCtaClick,
   homeHref = '/',
 }) => {
@@ -71,28 +74,52 @@ const Navigation: React.FC<NavigationProps> = ({
         </Link>
 
         {/* Primary CTA */}
-        <Button
-          className="hidden sm:inline-flex"
-          size="sm"
-          type="button"
-          variant="primary"
-          onClick={onCtaClick}
-        >
-          {ctaLabel}
-        </Button>
-        <Button
-          aria-label={ctaLabel}
-          className="sm:hidden"
-          size="icon"
-          type="button"
-          variant="primary"
-          onClick={onCtaClick}
-        >
-          {/* Up-arrow glyph doubles as a compact "go" cue. */}
-          <span aria-hidden="true" className="font-bold leading-none">
-            →
-          </span>
-        </Button>
+        {onCtaClick ? (
+          <>
+            <Button
+              className="hidden sm:inline-flex"
+              size="sm"
+              type="button"
+              variant="primary"
+              onClick={onCtaClick}
+            >
+              {ctaLabel}
+            </Button>
+            <Button
+              aria-label={ctaLabel}
+              className="sm:hidden"
+              size="icon"
+              type="button"
+              variant="primary"
+              onClick={onCtaClick}
+            >
+              {/* Up-arrow glyph doubles as a compact "go" cue. */}
+              <span aria-hidden="true" className="font-bold leading-none">
+                →
+              </span>
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button asChild={true} className="hidden sm:inline-flex" size="sm" variant="primary">
+              <Link href={ctaHref}>{ctaLabel}</Link>
+            </Button>
+            <Button
+              aria-label={ctaLabel}
+              asChild={true}
+              className="sm:hidden"
+              size="icon"
+              variant="primary"
+            >
+              <Link href={ctaHref}>
+                {/* Up-arrow glyph doubles as a compact "go" cue. */}
+                <span aria-hidden="true" className="font-bold leading-none">
+                  →
+                </span>
+              </Link>
+            </Button>
+          </>
+        )}
       </div>
     </nav>
   );

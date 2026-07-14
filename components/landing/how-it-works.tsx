@@ -89,7 +89,8 @@ const HowItWorks: React.FC<HowItWorksProps> = ({
   return (
     <section
       aria-labelledby={titleId}
-      className="relative w-full bg-background px-6 py-20 text-text-primary sm:py-24"
+      className="relative w-full scroll-mt-20 bg-background px-6 py-20 text-text-primary sm:py-24"
+      id="how-it-works"
     >
       <div className="mx-auto w-full max-w-6xl">
         {/* Section header */}
