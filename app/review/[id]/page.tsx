@@ -169,6 +169,52 @@ const SOURCE_ICONS: Record<SessionData['type'], LucideIcon> = {
 /* Fetch + parse                                                              */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Wire shape of `GET /api/reviews/:id`.
+ *
+ * The backend returns the session metadata nested under
+ * `session` and the evidence / reviewer results / verdict at
+ * the top level. The rest of this page works with a flat
+ * `SessionData`, so `fetchSession` normalizes the wire
+ * shape into the flat shape before the UI touches it.
+ *
+ * Keep this type in lockstep with `app/api/reviews/[id]/route.ts`.
+ */
+type WireResponse = {
+  session: {
+    id: string;
+    type: SessionData['type'];
+    status: ReviewStatus;
+    target: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  evidence: EvidenceSummary | null;
+  reviewerResults: ReviewerResult[];
+  verdict: Verdict | null;
+};
+
+const isWireResponse = (value: unknown): value is WireResponse => {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  const session = v.session;
+  if (typeof session !== 'object' || session === null) return false;
+  const s = session as Record<string, unknown>;
+  return (
+    typeof s.id === 'string' &&
+    (s.type === 'WEBSITE' ||
+      s.type === 'GITHUB' ||
+      s.type === 'ZIP' ||
+      s.type === 'PRIVATE_WEBSITE') &&
+    (s.status === 'PENDING' ||
+      s.status === 'RUNNING' ||
+      s.status === 'COMPLETED' ||
+      s.status === 'FAILED') &&
+    typeof s.target === 'string' &&
+    Array.isArray(v.reviewerResults)
+  );
+};
+
 const fetchSession = async (id: string): Promise<FetchState> => {
   let response: Response;
   try {
@@ -188,29 +234,49 @@ const fetchSession = async (id: string): Promise<FetchState> => {
       message: `Server returned ${response.status} ${response.statusText}.`,
     };
   }
-  let body: SessionData;
+  let raw: unknown;
   try {
-    body = (await response.json()) as SessionData;
+    raw = await response.json();
   } catch (error) {
     return {
       kind: 'error',
       message: error instanceof Error ? error.message : 'Failed to parse response',
     };
   }
-
-  if (body.status === 'COMPLETED') {
-    return { kind: 'completed', session: body };
-  }
-  if (body.status === 'FAILED') {
-    // No `reason` field on the GET response, but the headline
-    // is usually informative.
+  if (!isWireResponse(raw)) {
     return {
-      kind: 'failed',
-      session: body,
-      reason: body.verdict?.summary ?? 'SONDA could not complete this review.',
+      kind: 'error',
+      message: 'Unexpected response shape from the server.',
     };
   }
-  return { kind: 'running', session: body };
+
+  // Normalize the wire shape into the flat `SessionData` shape
+  // the rest of this page consumes.
+  const session: SessionData = {
+    id: raw.session.id,
+    type: raw.session.type,
+    status: raw.session.status,
+    target: raw.session.target,
+    createdAt: raw.session.createdAt,
+    updatedAt: raw.session.updatedAt,
+    evidence: raw.evidence,
+    reviewerResults: raw.reviewerResults,
+    verdict: raw.verdict,
+  };
+
+  if (session.status === 'COMPLETED') {
+    return { kind: 'completed', session };
+  }
+  if (session.status === 'FAILED') {
+    // No `reason` field on the GET response, but the verdict
+    // summary is usually informative.
+    return {
+      kind: 'failed',
+      session,
+      reason: session.verdict?.summary ?? 'SONDA could not complete this review.',
+    };
+  }
+  return { kind: 'running', session };
 };
 
 /* -------------------------------------------------------------------------- */
