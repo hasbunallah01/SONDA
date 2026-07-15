@@ -1,0 +1,65 @@
+# .github/workflows/asp-review.yml
+#
+# Off-Vercel review worker.
+#
+# Triggered by a `repository_dispatch` event (event type
+# `asp-review`) that `POST /api/asp/review` fires when an agent
+# submits a review. This job runs the full SONDA pipeline — which
+# takes 1-3 minutes and cannot fit in Vercel Hobby's 10s function
+# limit — and writes the verdict to the same Postgres database the
+# Vercel app reads from, so the polling GET returns the result.
+#
+# Secrets required (repo → Settings → Secrets and variables → Actions):
+#   DATABASE_URL    — same Postgres connection string as Vercel.
+#   OPENAI_API_KEY  — same key the reviewers use on Vercel.
+#
+# The dispatch payload carries the session id and (for private
+# reviews) the credentials, passed straight to the worker as env
+# vars — never written to the repo or logs.
+
+name: ASP Review Worker
+
+on:
+  repository_dispatch:
+    types: [asp-review]
+
+# Allow many reviews to run at once; do not cancel in-progress jobs.
+concurrency:
+  group: asp-review-${{ github.event.client_payload.sessionId }}
+  cancel-in-progress: false
+
+jobs:
+  run-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+        env:
+          PRISMA_SKIP_POSTINSTALL_GENERATE: '1'
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Run review pipeline
+        run: npx tsx scripts/run-review-job.ts --session "$SESSION_ID"
+        env:
+          NODE_ENV: production
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SESSION_ID: ${{ github.event.client_payload.sessionId }}
+          PRIVATE_USERNAME: ${{ github.event.client_payload.username }}
+          PRIVATE_PASSWORD: ${{ github.event.client_payload.password }}
+          PRIVATE_2FA: ${{ github.event.client_payload.twoFactorCode }}
+          REVIEW_NOTES: ${{ github.event.client_payload.notes }}

@@ -57,6 +57,19 @@ const envSchema = z.object({
 
   /** GitHub personal access token — raises REST rate limits (later task). */
   GITHUB_TOKEN: z.string().optional(),
+
+  // --- ASP async worker (GitHub Actions dispatch) ------------------------
+  /**
+   * PAT (repo + workflow scope) the ASP endpoint uses to fire a
+   * `repository_dispatch` event, waking the off-Vercel review worker.
+   * Optional so the app still boots without it (the endpoint returns a
+   * clear 503 if a review is submitted while it is unset).
+   */
+  GITHUB_DISPATCH_TOKEN: z.string().optional(),
+  /**
+   * `owner/repo` the dispatch is sent to. Defaults to the SONDA repo.
+   */
+  GITHUB_DISPATCH_REPO: z.string().default('hasbunallah01/SONDA'),
 });
 
 /* -------------------------------------------------------------------------- */

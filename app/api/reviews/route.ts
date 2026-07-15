@@ -62,7 +62,7 @@ import { runReview, type RunReviewOptions } from '@/services/review-orchestrator
  * minutes. Give the function the full window so long reviews do
  * not 504 mid-pipeline.
  */
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
