@@ -296,11 +296,20 @@ export const runReviewerPipeline = async (
     reviewerCount: reviewerRegistry.length,
   });
 
-  const outcomes: ReviewerRunOutcome[] = [];
-  for (const entry of reviewerRegistry) {
-    const outcome = await runOneReviewer(sessionId, evidence, entry);
-    outcomes.push(outcome);
-  }
+  // Reviewers are independent — each scores the same evidence and
+  // persists its own row via an idempotent upsert — so we run all of
+  // them concurrently. This turns the reviewer phase from the sum of
+  // six LLM round-trips into roughly one, which is what lets the MCP
+  // `review_product` tool return a completed verdict inline within the
+  // serverless time budget instead of falling back to polling.
+  //
+  // `runOneReviewer` catches its own errors and always resolves with a
+  // `failed: true` outcome (it never throws), so a plain `Promise.all`
+  // is safe and preserves registry order for deterministic downstream
+  // output.
+  const outcomes: ReviewerRunOutcome[] = await Promise.all(
+    reviewerRegistry.map((entry) => runOneReviewer(sessionId, evidence, entry)),
+  );
 
   const successCount = outcomes.filter((o) => !o.failed).length;
   const failureCount = outcomes.length - successCount;
