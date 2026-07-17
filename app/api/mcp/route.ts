@@ -334,4 +334,75 @@ const handler = createMcpHandler(
   },
 );
 
-export { handler as GET, handler as POST, handler as DELETE };
+const mcpHandler = handler;
+
+/**
+ * Compatibility wrapper around the strict mcp-handler.
+ *
+ * mcp-handler enforces the MCP spec requirement that clients send the
+ * Accept header "application/json, text/event-stream", returning 406 for
+ * anything else (plain application/json, star-slash-star, or a missing
+ * Accept header). Real-world callers -- including OKX.AI's platform
+ * tester -- don't always send that exact combination, and a 406 reads to
+ * them as "no response", which is what caused the review to time out.
+ *
+ * This wrapper makes the endpoint tolerant:
+ *   1. Before delegating, it rewrites the request Accept header to the
+ *      compliant value so mcp-handler never 406s on content negotiation.
+ *   2. It records whether the original client actually asked for SSE. If
+ *      it did not, the SSE-framed response is unwrapped back into a plain
+ *      application/json body, which any HTTP/JSON client can consume.
+ *
+ * The MCP protocol semantics are unchanged — only content negotiation is
+ * relaxed so the widest range of clients can call the server.
+ */
+const COMPLIANT_ACCEPT = 'application/json, text/event-stream';
+
+const wrapped = async (request: Request): Promise<Response> => {
+  const originalAccept = request.headers.get('accept') ?? '';
+  const clientWantsSse = originalAccept.includes('text/event-stream');
+
+  // Rewrite Accept so mcp-handler accepts the request.
+  const headers = new Headers(request.headers);
+  headers.set('accept', COMPLIANT_ACCEPT);
+  const proxied = new Request(request.url, {
+    method: request.method,
+    headers,
+    body:
+      request.method === 'GET' || request.method === 'HEAD'
+        ? undefined
+        : await request.clone().arrayBuffer(),
+  });
+
+  const res = await mcpHandler(proxied);
+
+  // If the client genuinely wanted SSE, pass the stream through untouched.
+  if (clientWantsSse) return res;
+
+  const contentType = res.headers.get('content-type') ?? '';
+  // Only transform SSE responses; leave JSON/others alone.
+  if (!contentType.includes('text/event-stream')) return res;
+
+  // Unwrap the SSE framing into a single JSON body. An SSE message is a
+  // series of lines; the JSON-RPC payload rides on the `data:` line(s).
+  const raw = await res.text();
+  const dataLines = raw
+    .split('\n')
+    .filter((l) => l.startsWith('data:'))
+    .map((l) => l.slice(5).trim())
+    .filter(Boolean);
+  const jsonBody = dataLines.length > 0 ? dataLines.join('') : raw.trim();
+
+  return new Response(jsonBody, {
+    status: res.status,
+    headers: {
+      'content-type': 'application/json',
+      // Preserve the session header if mcp-handler set one.
+      ...(res.headers.get('mcp-session-id')
+        ? { 'mcp-session-id': res.headers.get('mcp-session-id') as string }
+        : {}),
+    },
+  });
+};
+
+export { wrapped as GET, wrapped as POST, wrapped as DELETE };
