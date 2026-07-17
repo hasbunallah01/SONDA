@@ -93,21 +93,37 @@ const handler = createMcpHandler(
         notes: z.string().max(2000).optional().describe('Optional guidance for the reviewers.'),
       },
       async ({ type, target, username, password, twoFactorCode, notes }) => {
-        // 1. Create the session.
-        let sessionId: string;
-        try {
-          const session = await prisma.reviewSession.create({
-            data: { type: toPrismaReviewType(type), status: 'PENDING', target },
-            select: { id: true },
-          });
-          sessionId = session.id;
-        } catch (error) {
+        // 1. Create the session, retrying on transient DB/pool errors.
+        //    Neon's serverless Postgres can drop the first connection
+        //    from a cold pool; a fast retry with short backoff turns
+        //    that transient blip into a successful call instead of an
+        //    error response to the caller.
+        let sessionId: string | null = null;
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            const session = await prisma.reviewSession.create({
+              data: { type: toPrismaReviewType(type), status: 'PENDING', target },
+              select: { id: true },
+            });
+            sessionId = session.id;
+            break;
+          } catch (error) {
+            lastError = error;
+            // Short backoff: 250ms, then 750ms. Total worst-case added
+            // latency ~1s, negligible against the review itself.
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 250 + attempt * 500));
+            }
+          }
+        }
+        if (!sessionId) {
           return {
             content: [
               {
                 type: 'text' as const,
                 text: `Failed to start the review: ${
-                  error instanceof Error ? error.message : 'database error'
+                  lastError instanceof Error ? lastError.message : 'database error'
                 }`,
               },
             ],
