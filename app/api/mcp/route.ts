@@ -34,54 +34,15 @@ import { createMcpHandler } from 'mcp-handler';
 import { z } from 'zod';
 
 import { prisma } from '@/lib/db';
-import { env } from '@/lib/env';
 import { reviewTypeValues, toPrismaReviewType } from '@/lib/review-request';
 import { loadReviewWirePayload } from '@/lib/review-wire';
+import { runReview } from '@/services/review-orchestrator';
 
 export const maxDuration = 60;
 
 /* -------------------------------------------------------------------------- */
-/* Shared helpers (mirror the REST route, so both stay in lockstep)           */
+/* Shared helpers                                                             */
 /* -------------------------------------------------------------------------- */
-
-const dispatchWorker = async (
-  sessionId: string,
-  credentials: {
-    username?: string;
-    password?: string;
-    twoFactorCode?: string;
-    notes?: string;
-  },
-): Promise<{ ok: true } | { ok: false; reason: string }> => {
-  const token = env.GITHUB_DISPATCH_TOKEN;
-  if (!token) {
-    return { ok: false, reason: 'Worker dispatch is not configured (missing token).' };
-  }
-  const repo = env.GITHUB_DISPATCH_REPO;
-  try {
-    const res = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: JSON.stringify({
-        event_type: 'asp-review',
-        client_payload: { sessionId, ...credentials },
-      }),
-    });
-    if (res.status === 204) return { ok: true };
-    const text = await res.text().catch(() => '');
-    return { ok: false, reason: `Dispatch failed (${res.status}). ${text.slice(0, 200)}`.trim() };
-  } catch (error) {
-    return {
-      ok: false,
-      reason: error instanceof Error ? error.message : 'Dispatch request failed.',
-    };
-  }
-};
 
 /** Compact, agent-friendly projection of a finished verdict. */
 const summarizeVerdict = (
@@ -105,8 +66,6 @@ const summarizeVerdict = (
   };
 };
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
 /* -------------------------------------------------------------------------- */
 /* MCP handler                                                                */
 /* -------------------------------------------------------------------------- */
@@ -116,7 +75,7 @@ const handler = createMcpHandler(
     // ---- Tool 1: review_product -----------------------------------------
     server.tool(
       'review_product',
-      'Run an autonomous multi-agent product launch review. A jury of six specialist AI reviewers (QA, UX, Marketing, Investor, First-time User, and a Hackathon Judge) investigates the target and returns a launch verdict: overall score out of 100, launch-readiness status, top strengths, top issues, and prioritized fixes. Reviewing takes 1-3 minutes; if the verdict is not ready when this returns, use get_review with the returned id to fetch it.',
+      'Run an autonomous multi-agent product launch review. A jury of six specialist AI reviewers (QA, UX, Marketing, Investor, First-time User, and a Hackathon Judge) investigates the target and returns a launch verdict: overall score out of 100, launch-readiness status, top strengths, top issues, and prioritized fixes. Returns the full verdict inline in a single call (typically a few seconds).',
       {
         type: z
           .enum(reviewTypeValues)
@@ -156,74 +115,88 @@ const handler = createMcpHandler(
           };
         }
 
-        // 2. Fire the worker.
-        const dispatched = await dispatchWorker(sessionId, {
-          username,
-          password,
-          twoFactorCode,
-          notes,
-        });
-        if (!dispatched.ok) {
-          await prisma.reviewSession
-            .update({ where: { id: sessionId }, data: { status: 'FAILED' } })
-            .catch(() => undefined);
+        // 2. Run the pipeline INLINE. The reviewers are deterministic
+        //    (no LLM calls) and evidence collection is a few bounded
+        //    fetches, so the whole review completes in seconds — well
+        //    within the serverless window. Running it here (instead of
+        //    dispatching to the GitHub Actions worker, whose runner
+        //    cold-start added ~30s) is what lets OKX's tester get a fast
+        //    inline response instead of timing out.
+        try {
+          await runReview(sessionId, {
+            privateCredentials:
+              type === 'private' && (username || password) ? { username, password } : undefined,
+            twoFactorCode,
+            notes,
+          });
+        } catch (error) {
+          // A pipeline failure is a valid terminal outcome, not a
+          // transport error — report it as a failed review.
           return {
             content: [
               {
                 type: 'text' as const,
-                text: `Could not start the review worker: ${dispatched.reason}`,
+                text: JSON.stringify(
+                  {
+                    ok: false,
+                    status: 'failed',
+                    id: sessionId,
+                    reason:
+                      error instanceof Error
+                        ? error.message
+                        : 'SONDA could not complete this review.',
+                  },
+                  null,
+                  2,
+                ),
               },
             ],
-            isError: true,
           };
         }
 
-        // 3. Poll internally for a bounded window so a fast review returns
-        //    its verdict inline. Cap the wait below the function limit.
-        const deadline = Date.now() + 45_000;
-        while (Date.now() < deadline) {
-          await sleep(3_000);
-          const payload = await loadReviewWirePayload(sessionId).catch(() => null);
-          if (!payload) continue;
-          const status = payload.session.status;
-          if (status === 'COMPLETED') {
-            const verdict = summarizeVerdict(payload);
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify(
-                    { ok: true, status: 'completed', id: sessionId, verdict },
-                    null,
-                    2,
-                  ),
-                },
-              ],
-            };
-          }
-          if (status === 'FAILED') {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: JSON.stringify(
-                    {
-                      ok: false,
-                      status: 'failed',
-                      id: sessionId,
-                      reason: payload.verdict?.summary ?? 'SONDA could not complete this review.',
-                    },
-                    null,
-                    2,
-                  ),
-                },
-              ],
-            };
-          }
+        // 3. Load the finished verdict and return it inline.
+        const payload = await loadReviewWirePayload(sessionId).catch(() => null);
+        if (payload && payload.session.status === 'COMPLETED') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  {
+                    ok: true,
+                    status: 'completed',
+                    id: sessionId,
+                    verdict: summarizeVerdict(payload),
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        if (payload && payload.session.status === 'FAILED') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  {
+                    ok: false,
+                    status: 'failed',
+                    id: sessionId,
+                    reason: payload.verdict?.summary ?? 'SONDA could not complete this review.',
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
         }
 
-        // 4. Still running — return the id so the caller fetches it with
-        //    get_review. This is a valid, prompt response, not a hang.
+        // Fallback: the review ran but the row wasn't COMPLETED/FAILED
+        // (should not happen). Return the id so the caller can fetch it.
         return {
           content: [
             {
@@ -233,8 +206,7 @@ const handler = createMcpHandler(
                   ok: true,
                   status: 'running',
                   id: sessionId,
-                  message:
-                    'Review is still running (typically 1-3 minutes total). Call get_review with this id in ~60-120 seconds to fetch the full verdict.',
+                  message: 'Review submitted. Call get_review with this id to fetch the verdict.',
                   reportUrl: `https://sonda-phi.vercel.app/review/${sessionId}`,
                 },
                 null,
